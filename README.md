@@ -223,4 +223,7 @@ bilibili-ai-summary/
 4. 在 GitHub 该仓库 **Releases** 页以该 tag 发布，上传源码 zip（tag 名须与 `version.json` 的 `version` 一致，扩展据此拼下载地址）；
 5. 推送后，已安装用户将在 12 小时内（或手动「检查更新」）收到新版本提示。
 
-> 首次发布前，请把 `updater.js` 顶部的 `UPDATE_REPO = 'OWNER/REPO'` 改成实际仓库路径（如 `alice/bilibili-ai-summary`）。
+> ⚠️ **修改 manifest.json 时切勿新增第二个 `host_permissions` 键**：JSON 重复键会被后者覆盖，导致 B站域名权限静默丢失、字幕抓取与视频下载全部失效。本地校验命令（解析后应为单个合并数组）：
+> `node -e "console.log(JSON.parse(require('fs').readFileSync('manifest.json','utf8')).host_permissions.length)"`
+
+> `updater.js` 顶部的 `UPDATE_REPO` 已设为实际仓库路径 `zanmeidalao/bilibili-ai-summary`，后续发版无需再改。

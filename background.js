@@ -351,7 +351,7 @@ async function fetchSubtitleBody(subtitleUrl, tabId) {
   throw new Error('下载字幕失败（SW fetch 与 JSONP 均不可用）');
 }
 
-/** 拉取视频视图（/x/web-interface/view）返回 data；downloadVideo360p 与 fetchVideoView 共用，消除重复请求与解析 */
+/** 拉取视频视图（/x/web-interface/view）返回 data；downloadVideo 与 fetchVideoView 共用，消除重复请求与解析 */
 async function fetchView(bvid) {
   const view = await getJson(`https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`);
   if (!view || !view.data) throw new Error('获取视频信息失败');
@@ -418,8 +418,8 @@ async function getSubtitleLangs(info, aiAllowed) {
   return filterAiSubs(subs, aiAllowed).map((s) => ({ lan: s.lan, lan_doc: s.lan_doc || s.lan }));
 }
 
-// ==================== 视频下载（360p 全自动） ====================
-// 目标：点一下按钮把当前视频以 360p 存到本地。
+// ==================== 视频下载（按所选清晰度，默认 1080p 自动回退） ====================
+// 目标：点一下按钮把当前视频以所选清晰度存到本地（拉流失败逐级回退）。
 // 技术要点：
 //  - playurl 需要登录态才能拿到带签名的 durl 地址（SW 内 fetch 已能过 player 域，见字幕逻辑）。
 //  - 视频流 CDN（*.bilivideo.com / *.hdslb.com / *.mountaintoys.cn 分片）返回 403 的病根
@@ -546,7 +546,7 @@ async function downloadViaOffscreen(durl, filename, tabId, requestId) {
 /** 主下载流程：view → playurl(指定清晰度，缺失则逐级回退) → offscreen 拉流 → 落盘
  * @param preferredQn 用户指定清晰度（16/32/64/80 或 'auto'）；auto 沿用原 360p 优先链
  */
-async function downloadVideo360p(info, tabId, preferredQn) {
+async function downloadVideo(info, tabId, preferredQn) {
   if (!info || !info.bvid) throw new Error('未识别到视频（仅支持视频页）');
 
   const data = await fetchView(info.bvid);
@@ -560,13 +560,13 @@ async function downloadVideo360p(info, tabId, preferredQn) {
 
   // 清晰度标签（含 1080p）
   const usedLabels = { 16: '360p', 32: '480p', 64: '720p', 80: '1080p' };
-  // 用户指定清晰度则优先，失败再按 1080→720→480→360 回退；"auto" 沿用原 360p 优先链
+  // 用户指定清晰度则优先，失败再按 1080→720→480→360 回退；未指定（含旧版 'auto'）同样用 1080p 优先链
   let qnCandidates;
   if (preferredQn && preferredQn !== 'auto') {
     const pq = Number(preferredQn);
     qnCandidates = [pq, ...[80, 64, 32, 16].filter((q) => q !== pq)];
   } else {
-    qnCandidates = [16, 32, 64];
+    qnCandidates = [80, 64, 32, 16];
   }
   let durl = null;
   let usedQn = null;
@@ -832,7 +832,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
       return true;
     case 'DOWNLOAD_360P':
-      downloadVideo360p(msg.info, tabId, msg.qn)
+      downloadVideo(msg.info, tabId, msg.qn)
         .then((r) => sendResponse({ ok: true, result: r }))
         .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
       return true;

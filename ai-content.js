@@ -3,7 +3,7 @@
  *
  * 职责：在本页内完成字幕的写入与发送（不使用 chrome.debugger，避免触发调试横幅）。
  * 收到 INJECT_AI_TEXT 消息后，找到聊天输入框，聚焦并把字幕写入，再点击「发送」按钮
- * （兜底派发 Enter）。另响应 FOCUS_AI_INPUT / CHECK_AI_INPUT 供 background 发送前确认就绪。
+ * （兜底派发 Enter）。另响应 FOCUS_AI_INPUT 供 background 聚焦输入框。
  */
 (() => {
   'use strict';
@@ -118,18 +118,6 @@
     } catch (e) { /* ignore */ }
 
     return { ok: true };
-  }
-
-  /** 读取聊天输入框当前文本长度（供 background 确认文本已写入） */
-  function getEditorTextLength() {
-    const el = pickInput();
-    if (!el) return { ok: false, error: '未找到聊天输入框' };
-    const editor = resolveEditorElement(el);
-    if (!editor) return { ok: false, error: '目标元素不可编辑' };
-    const len = (editor.tagName === 'TEXTAREA' || editor.tagName === 'INPUT')
-      ? (editor.value || '').length
-      : (editor.textContent || '').trim().length;
-    return { ok: true, length: len };
   }
 
   // 各 AI 站点的「发送」按钮选择器（按优先级）。兜底用通用选择器。
@@ -268,10 +256,6 @@
     if (!msg) return undefined;
     if (msg.type === 'FOCUS_AI_INPUT') {
       sendResponse(focusEditor());
-      return undefined;
-    }
-    if (msg.type === 'CHECK_AI_INPUT') {
-      sendResponse(getEditorTextLength());
       return undefined;
     }
     if (msg.type === 'INJECT_AI_TEXT') {

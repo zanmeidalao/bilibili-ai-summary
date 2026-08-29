@@ -89,13 +89,11 @@
   function getUpdateZipUrl(version) {
     return 'https://github.com/' + UPDATE_REPO + '/archive/refs/tags/v' + version + '.zip';
   }
-  function getReleaseUrl() { return UPDATE_RELEASE_URL; }
 
   // 暴露给 background.js（与 shared.js 的 root 挂载方式一致）
   root.checkForUpdate = checkForUpdate;
   root.getUpdateInfo = getUpdateInfo;
   root.setupUpdateAlarm = setupUpdateAlarm;
   root.getUpdateZipUrl = getUpdateZipUrl;
-  root.getReleaseUrl = getReleaseUrl;
   root.UPDATE_ALARM = UPDATE_ALARM;
 })(typeof self !== 'undefined' ? self : this);

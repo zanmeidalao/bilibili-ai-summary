@@ -442,7 +442,6 @@
       box-shadow: 0 1px 3px rgba(0,0,0,.3);
     }
     .ai-dot.on { display: flex; }
-    .ai-dot.on { display: flex; }
 
     /* 更新角标：发现新版本时显示（橙色 ↑） */
     .update-dot {
@@ -454,6 +453,31 @@
       box-shadow: 0 1px 3px rgba(0,0,0,.3);
     }
     .update-dot.on { display: flex; }
+
+    /* 更新行：状态说明靠左，按钮靠右，小色点指示版本状态（不醒目） */
+    .panel .p-update {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 12px; color: #61666d;
+    }
+    .panel .p-update-status { display: flex; align-items: center; gap: 7px; }
+    .panel .p-update-dot {
+      width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+      background: #9499a0;
+    }
+    .panel .p-update.state-uptodate .p-update-dot { background: #52c41a; }
+    .panel .p-update.state-available .p-update-dot { background: #fa8c16; }
+    .panel .p-update.state-error .p-update-dot { background: #e24b4a; }
+    .panel .p-update.state-checking .p-update-dot { background: #9499a0; }
+    .panel .p-update-ver { color: #61666d; white-space: nowrap; }
+    .panel .p-update .p-check-update, .panel .p-update .p-dl-update {
+      height: 28px; border: none; border-radius: 8px; font-size: 12px; cursor: pointer;
+      font-family: inherit; padding: 0 12px; line-height: 1;
+    }
+    .panel .p-update .p-check-update { background: #f1f2f3; color: #18191c; }
+    .panel .p-update .p-check-update:hover { background: #e6e8ea; }
+    .panel .p-update .p-check-update:disabled { opacity: .6; cursor: default; }
+    .panel .p-update .p-dl-update { background: #fa8c16; color: #fff; }
+    .panel .p-update .p-dl-update:hover { filter: brightness(.97); }
 
     /* 控制面板（右键悬浮按钮弹出） */
     .panel {
@@ -657,11 +681,12 @@
       </div>
     </div>
     <div class="p-group p-update">
-      <div class="p-label">更新 <span class="p-update-ver"></span></div>
-      <div class="p-row">
-        <button class="p-check-update" type="button">检查更新</button>
-        <button class="p-dl-update" type="button" style="display:none">下载更新</button>
-      </div>
+      <span class="p-update-status">
+        <span class="p-update-dot"></span>
+        <span class="p-update-ver"></span>
+      </span>
+      <button class="p-check-update" type="button">检查更新</button>
+      <button class="p-dl-update" type="button" hidden>下载更新</button>
     </div>
     <div class="p-foot">设置保存在本机浏览器，修改后立即对所有 B 站页面生效</div>
   `;
@@ -760,22 +785,46 @@
   const pManage = panel.querySelector('.p-manage');
 
   // ===================== GitHub 更新检测 UI（基于仓库 version.json） =====================
-  const updateDot = wrap.querySelector('.update-dot');
+  const pUpdate = panel.querySelector('.p-update');
+  const pUpdateDot = panel.querySelector('.p-update-dot');
   const pUpdateVer = panel.querySelector('.p-update-ver');
+  const updateDot = wrap.querySelector('.update-dot');
   const pCheckUpdate = panel.querySelector('.p-check-update');
   const pDlUpdate = panel.querySelector('.p-dl-update');
 
   function showUpdateDot(on) {
     if (updateDot) updateDot.classList.toggle('on', !!on);
   }
+  // 更新行状态机：checking / uptodate / available / error
+  function setUpdateState(state, info) {
+    if (!pUpdate) return;
+    pUpdate.classList.remove('state-checking', 'state-uptodate', 'state-available', 'state-error');
+    pUpdate.classList.add('state-' + state);
+    const cur = info && info.current ? String(info.current) : '';
+    const latest = info && info.latest ? String(info.latest) : cur;
+    let ver = '';
+    if (state === 'checking') ver = '检查中…';
+    else if (state === 'error') ver = '检查失败';
+    else if (state === 'available' && cur && latest && cur !== latest) ver = '发现新版本 v' + cur + ' → v' + latest;
+    else if (state === 'available') ver = '发现新版本 v' + latest;
+    else if (cur) ver = '已是最新 v' + cur;
+    if (pUpdateVer) pUpdateVer.textContent = ver;
+    if (pCheckUpdate) {
+      if (state === 'available') { pCheckUpdate.hidden = true; }
+      else {
+        pCheckUpdate.hidden = false;
+        pCheckUpdate.disabled = (state === 'checking');
+        pCheckUpdate.textContent = state === 'checking' ? '检查中…' : (state === 'error' ? '重试' : '检查更新');
+      }
+    }
+    if (pDlUpdate) pDlUpdate.hidden = (state !== 'available');
+    showUpdateDot(!!(info && info.updateAvailable));
+  }
   function renderUpdateInfo(info) {
-    if (!info) { showUpdateDot(false); if (pUpdateVer) pUpdateVer.textContent = ''; if (pDlUpdate) pDlUpdate.style.display = 'none'; return; }
-    const cur = String(info.current || '');
-    const latest = String(info.latest || cur);
-    const avail = !!info.updateAvailable;
-    if (pUpdateVer) pUpdateVer.textContent = avail ? `（当前 ${cur} → 最新 ${latest}）` : `（已是最新 ${cur}）`;
-    showUpdateDot(avail);
-    if (pDlUpdate) pDlUpdate.style.display = avail ? '' : 'none';
+    if (!info) { setUpdateState('uptodate', { current: '' }); return; }
+    if (info.updateAvailable) setUpdateState('available', info);
+    else if (info.error) setUpdateState('error', info);
+    else setUpdateState('uptodate', info);
   }
   function getStoredUpdate() {
     return new Promise((resolve) => {
@@ -797,9 +846,9 @@
   }
   if (pCheckUpdate) pCheckUpdate.addEventListener('click', async (e) => {
     e.stopPropagation();
-    pCheckUpdate.textContent = '检查中…';
+    const before = await getStoredUpdate();
+    setUpdateState('checking', before);
     await refreshUpdatePanel(true);
-    pCheckUpdate.textContent = '检查更新';
     const info = await getStoredUpdate();
     if (info && info.updateAvailable) showToast('发现新版本 ' + info.latest + '，可点击「下载更新」', 'ok');
     else showToast(info && info.error ? ('更新检查失败：' + info.error) : '已是最新版本', info && info.error ? 'warn' : 'ok');
@@ -1238,7 +1287,11 @@
     } catch (e) { /* ignore */ }
 
     updateModeUI();
-    getStoredUpdate().then(renderUpdateInfo); // 进入页面即按已存更新信息显示角标
+    // 进入页面：有缓存更新信息则直接显示，否则主动检查一次（避免每页重复联网）
+    getStoredUpdate().then((info) => {
+      if (info) renderUpdateInfo(info);
+      else refreshUpdatePanel(true);
+    });
     loadPos();
     normalizePos();
     document.body.appendChild(host);
