@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>提示词管理</title>
+<style>
+  :root { --pink:#fb7299; --pink2:#e85b8f; --line:#e3e5e7; --txt:#18191c; --sub:#61666d; --hint:#9499a0; --bg:#f7f8fa; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 32px;
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    color: var(--txt); background: var(--bg); line-height: 1.6;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--hint); font-size: 13px; margin-bottom: 18px; }
+  .notice {
+    display: flex; align-items: center; gap: 8px;
+    background: #fff1f5; border: 1px solid #ffb3cf; color: #d4387a;
+    padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    margin-bottom: 20px;
+  }
+  section {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.05);
+  }
+  .sec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  h2 { font-size: 15px; margin: 0; }
+  .hint { color: var(--hint); font-size: 12px; margin-bottom: 14px; }
+  .add {
+    display: block; width: 100%; margin-bottom: 14px;
+    background: linear-gradient(135deg, var(--pink), var(--pink2)); color: #fff;
+    border: none; border-radius: 8px; padding: 11px 16px;
+    font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
+    box-shadow: 0 2px 8px rgba(251,114,153,.25);
+  }
+  .add:hover { filter: brightness(1.05); }
+  .none-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 14px; color: var(--sub); }
+  #prompts { display: flex; flex-direction: column; gap: 12px; }
+  .pcard {
+    border: 1px solid var(--line); border-radius: 10px; padding: 14px;
+    background: #fafbfc; transition: border-color .15s, box-shadow .15s;
+  }
+  .pcard.active { border: 2px solid var(--pink); background: #fff; box-shadow: 0 2px 10px rgba(251,114,153,.12); }
+  .pcard.locked { background: #f3f4f5; }
+  .phead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .badge { font-size: 12px; padding: 2px 10px; border-radius: 11px; background: #fff1f5; color: var(--pink); font-weight: 600; }
+  .pname {
+    flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
+    font-size: 13px; font-family: inherit; color: var(--txt);
+  }
+  .pname:focus { outline: none; border-color: var(--pink); }
+  .plock { color: var(--hint); font-size: 12px; }
+  .pdel { background: #fff; color: #f25d8e; border: 1px solid #f3c0d0; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+  .pdel:hover { background: #fff0f4; }
+  .ptext {
+    width: 100%; min-height: 110px; resize: vertical;
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    font-size: 13px; line-height: 1.6; font-family: inherit; color: var(--txt);
+  }
+  .ptext:focus { outline: none; border-color: var(--pink); }
+  textarea:disabled, input:disabled { cursor: not-allowed; }
+  .pcard.locked .pname, .pcard.locked .ptext { background: #e9eaec; color: var(--sub); }
+  .actions {
+    position: sticky; bottom: 0; z-index: 5;
+    display: flex; align-items: center; gap: 12px;
+    margin-top: 16px; padding: 14px 16px;
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 -2px 10px rgba(0,0,0,.05);
+  }
+  .dirty-tag { font-size: 13px; font-weight: 600; }
+  .dirty-tag.clean { color: #52c41a; }
+  .dirty-tag.dirty { color: #fb7299; animation: dirtyBlink 1.4s ease-in-out infinite; }
+  @keyframes dirtyBlink { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+  button.save {
+    border: none; border-radius: 8px; padding: 9px 24px; font-size: 14px;
+    cursor: pointer; font-family: inherit;
+    background: linear-gradient(135deg, var(--pink), var(--pink2)); color: #fff;
+  }
+  button.save:hover { filter: brightness(1.05); }
+  button.save:not(:disabled) { animation: savePulse 1.8s ease-in-out infinite; }
+  button.save:disabled { background: #e3e5e7; color: #9499a0; cursor: not-allowed; box-shadow: none; }
+  @keyframes savePulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(251,114,153,.45); }
+    50% { box-shadow: 0 0 0 7px rgba(251,114,153,0); }
+  }
+  #about-sec .about-row { display: flex; align-items: center; gap: 16px; font-size: 13px; margin-bottom: 12px; }
+  #about-sec .about-row b { color: var(--txt); }
+  #about-latest { color: var(--sub); }
+  #about-latest.has-update { color: #fa8c16; font-weight: 600; }
+  #about-sec .about-actions { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .about-btn {
+    border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--sub);
+    padding: 7px 16px; font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  .about-btn:hover { background: #f0f1f2; }
+  .about-btn.about-dl { border-color: #fa8c16; color: #fa8c16; font-weight: 600; }
+  .about-btn.about-dl:hover { background: #fff7ec; }
+  .about-link { color: var(--pink); font-size: 13px; text-decoration: none; }
+  .about-link:hover { text-decoration: underline; }
+  #about-notes { font-size: 12px; color: var(--sub); line-height: 1.6; white-space: pre-wrap; min-height: 14px; }
+</style>
+</head>
+<body>
+  <h1>提示词管理</h1>
+  <div class="sub">为「分析提示词」功能管理可切换的提示词列表</div>
+  <div class="notice">⚠ 提示：设置保存在本机浏览器，点击「保存」后修改对所有 B 站页面生效。</div>
+
+  <section>
+    <div class="sec-head">
+      <h2>分析提示词（单选当前生效）</h2>
+    </div>
+    <button id="add" class="add" type="button">＋ 新建提示词</button>
+    <div class="hint">可新增/删除自定义提示词、自定义名称；在 B 站页面右键悬浮按钮也可快速切换。列表首项「默认分析」为内置项：不可删除、不可改名、内容不可编辑，仅可停用或选为当前。</div>
+    <label class="none-row"><input type="radio" name="prompt" value="__none__"> 不使用提示词（仅复制字幕）</label>
+    <div id="prompts"></div>
+  </section>
+
+  <section id="about-sec">
+    <div class="sec-head"><h2>关于 / 更新</h2></div>
+    <div class="about-row">
+      <span>当前版本：<b id="about-cur">—</b></span>
+      <span id="about-latest">—</span>
+    </div>
+    <div class="about-actions">
+      <button id="about-check" class="about-btn" type="button">检查更新</button>
+      <button id="about-dl" class="about-btn about-dl" type="button" style="display:none">下载更新</button>
+      <a id="about-repo" class="about-link" href="#" target="_blank" rel="noopener">GitHub 仓库</a>
+    </div>
+    <div id="about-notes"></div>
+  </section>
+
+  <div class="actions">
+    <span id="dirty" class="dirty-tag">✓ 已保存</span>
+    <button id="save" class="save" type="button" disabled>保存</button>
+  </div>
+
+  <script src="shared.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

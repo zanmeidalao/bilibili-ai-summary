@@ -1,0 +1,15 @@
+# 项目记忆 / 本地数据（不提交）
+.workbuddy/
+
+# 操作系统 / 编辑器垃圾
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.swp
+*~
+.vscode/
+.idea/
+
+# 下载产物（更新包 zip 等，不入库）
+*.zip

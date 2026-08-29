@@ -1,0 +1,68 @@
+{
+  "manifest_version": 3,
+  "name": "B站AI总结助手",
+  "version": "3.0.0",
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "description": "在B站视频页面点击插件悬浮按钮，插件会自动复制视频的字幕发送到选择的AI对话模型网页端，对视频做总结",
+  "permissions": ["clipboardWrite", "storage", "scripting", "tabs", "downloads", "offscreen", "alarms"],
+  "host_permissions": [
+    "*://*.bilibili.com/*",
+    "*://*.hdslb.com/*",
+    "*://*.bilivideo.com/*",
+    "*://*.bilivideo.cn/*",
+    "*://*.bilivideo.net/*",
+    "*://*.biliapi.net/*",
+    "*://*.akamaized.net/*",
+    "*://*.mountaintoys.cn/*",
+    "*://*.mcdn.bilivideo.cn/*"
+  ],
+  "host_permissions": [
+    "*://raw.githubusercontent.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.bilibili.com/*"],
+      "js": ["shared.js", "content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://chatgpt.com/*",
+        "*://chat.openai.com/*",
+        "*://claude.ai/*",
+        "*://gemini.google.com/*",
+        "*://aistudio.google.com/*",
+        "*://chat.deepseek.com/*",
+        "*://kimi.moonshot.cn/*",
+        "*://yuanbao.tencent.com/*",
+        "*://chatglm.cn/*",
+        "*://www.chatglm.cn/*",
+        "*://www.kimi.com/*",
+        "*://chat.qwen.ai/*",
+        "*://tongyi.aliyun.com/*",
+        "*://www.doubao.com/*",
+        "*://doubao.com/*",
+        "*://yiyan.baidu.com/*",
+        "*://chat.baidu.com/*",
+        "*://grok.com/*",
+        "*://www.perplexity.ai/*",
+        "*://copilot.microsoft.com/*",
+        "*://chat.mistral.ai/*"
+      ],
+      "js": ["ai-content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
