@@ -1,5 +1,5 @@
 {
-  "version": "3.1.0",
-  "notes": "v3.1.0：修复 manifest 重复 host_permissions 键（恢复 B站域名权限，修复字幕复制/视频下载失效）；清理冗余代码与死函数、合并重复 CSS、优化检查更新 UI；README 补充发版告警",
-  "date": "2026-08-29"
+  "version": "3.1.1",
+  "notes": "v3.1.1：修复视频下载「网络问题」——增强 CDN 拉流抗 403（优先带登录 Cookie + player 页 Referer、补 User-Agent）；离屏页拉流失败时由 Service Worker 兜底拉取（SW 拥有 host_permissions，CORS 绕过最稳）；下载报错精确化（区分网络拦截/防盗链/需登录），便于排障",
+  "date": "2026-09-02"
 }

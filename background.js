@@ -495,6 +495,20 @@ chrome.runtime.onMessage.addListener((msg) => {
   return undefined;
 });
 
+/** 离屏页 CDN 拉流失败时，由 SW 兜底拉取视频分片（SW 拥有 host_permissions，CORS 绕过最稳） */
+async function fetchSegmentInSw(url, headers, credentials) {
+  const resp = await fetch(url, { credentials: credentials || 'omit', headers });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return await resp.arrayBuffer();
+}
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== 'FETCH_SEGMENT') return undefined;
+  fetchSegmentInSw(msg.url, msg.headers || {}, msg.credentials)
+    .then((ab) => sendResponse({ ok: true, arrayBuffer: ab }))
+    .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+  return true; // 异步 sendResponse
+});
+
 /** 落盘进度：chrome.downloads.onChanged → 转发给页面（显示 "已下载 xx%"），并在任务终结时回收资源 */
 chrome.downloads.onChanged.addListener((delta) => {
   if (!delta || !delta.id) return;
@@ -570,16 +584,25 @@ async function downloadVideo(info, tabId, preferredQn) {
   }
   let durl = null;
   let usedQn = null;
+  let lastPlayErr = null;
   for (const qn of qnCandidates) {
     try {
       const list = await fetchPlayUrlDurl(bvid, cid, qn);
       // fetchPlayUrlDurl 已过滤无 url 项；只要拿到非空列表即视为该清晰度可用
       if (list.length) { durl = list; usedQn = qn; break; }
     } catch (e) {
+      lastPlayErr = e;
       console.warn(`[字幕助手] playurl qn=${qn} 失败，继续回退：`, e);
     }
   }
-  if (!durl) throw new Error('该视频当前无可下载的视频流（可能需登录 B 站）');
+  if (!durl) {
+    const m = (lastPlayErr && lastPlayErr.message) || '';
+    // 区分「网络被拦截」与「无可用视频流」，方便排障（而不是笼统报网络问题）
+    if (/Failed to fetch|TypeError|network/i.test(m)) {
+      throw new Error('获取播放地址失败：网络请求被拦截（请确认扩展已重新加载到最新版，并在浏览器登录了 B 站）');
+    }
+    throw new Error('该视频当前无可下载的视频流（可能需登录 B 站，或该清晰度不可用）');
+  }
 
   // 构造任务 id 并登记发起标签页（进度转发用）
   const requestId = 'task-' + (++downloadSeq);

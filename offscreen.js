@@ -22,16 +22,18 @@ const SEGMENT_SIZE = 4 * 1024 * 1024; // 每段 4MB（Range 分段粒度）
 const CONCURRENCY = 5;                // 同时下载的段数（并发提速核心）
 const lastProgressReport = {};        // 按 requestId 各自的进度上报节流时间戳（避免多任务并发互相抑制）
 
-// ==================== 请求头组合（与播放器行为对齐） ====================
+// ==================== 请求头组合（与播放器行为对齐，优先带登录态） ====================
+// Range 由 fetchSegment 统一附加，这里只列 Referer/Origin/Cookie/UA 组合。
+// 顺序：先试「带 Cookie + player 页 Referer」（B站 CDN 防盗链最常接受），
+// 再退到仅 Referer，最后仅 UA。全部失败再由 background(SW) 兜底拉流。
+const VIDEO_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const VIDEO_FETCH_HEADER_CANDIDATES = [
-  // 组合 0：播放器同款——Referer=bilibili + Range 分段 + 不带 Cookie
-  { name: 'Range+Ref=bili', headers: { Referer: 'https://www.bilibili.com/', Range: 'bytes=0-' }, credentials: 'omit' },
-  // 组合 1：仅 Range，无任何 Referer
-  { name: 'Range仅', headers: { Range: 'bytes=0-' }, credentials: 'omit' },
-  // 组合 2：Range + Origin + Referer（某些节点要求 Origin）
-  { name: 'Range+Origin', headers: { Origin: 'https://www.bilibili.com', Referer: 'https://www.bilibili.com/', Range: 'bytes=0-' }, credentials: 'omit' },
-  // 组合 3：带 Cookie 的旧方式兜底（个别节点需要登录态才能拉流）
-  { name: 'Ref=bili+Cookie', headers: { Referer: 'https://www.bilibili.com/' }, credentials: 'include' }
+  { name: 'Cookie+Ref=player', headers: { Referer: 'https://player.bilibili.com/', 'User-Agent': VIDEO_UA }, credentials: 'include' },
+  { name: 'Cookie+Ref=www',    headers: { Referer: 'https://www.bilibili.com/',  'User-Agent': VIDEO_UA }, credentials: 'include' },
+  { name: 'Ref=player',        headers: { Referer: 'https://player.bilibili.com/', 'User-Agent': VIDEO_UA }, credentials: 'omit' },
+  { name: 'Ref=www',           headers: { Referer: 'https://www.bilibili.com/',  'User-Agent': VIDEO_UA }, credentials: 'omit' },
+  { name: 'Origin+Ref',        headers: { Origin: 'https://www.bilibili.com', Referer: 'https://www.bilibili.com/', 'User-Agent': VIDEO_UA }, credentials: 'omit' },
+  { name: 'UA仅',              headers: { 'User-Agent': VIDEO_UA }, credentials: 'omit' }
 ];
 
 /**
@@ -71,6 +73,24 @@ async function fetchSegment(url, headerSet, start, end, onChunk) {
     off += c.byteLength;
   }
   return out.buffer;
+}
+
+/**
+ * 经 background(Service Worker) 拉取单个 Range 段（SW 拥有 host_permissions，可绕过 CDN 的 CORS/防盗链拦截）。
+ * 用于离屏页本地请求头组合全部失败时兜底：万一离屏页 fetch 没吃到扩展权限，SW 这层是稳的。
+ */
+function fetchSegmentViaSw(url, headerSet, start, end) {
+  const headers = Object.assign({}, headerSet.headers);
+  headers.Range = (start == null) ? 'bytes=0-' : `bytes=${start}-${end}`;
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.runtime.sendMessage({ type: 'FETCH_SEGMENT', url, headers, credentials: headerSet.credentials || 'omit' }, (resp) => {
+        if (chrome.runtime.lastError) return reject(new Error('SW 通信失败：' + chrome.runtime.lastError.message));
+        if (!resp || !resp.ok) return reject(new Error((resp && resp.error) || 'SW 拉流失败'));
+        resolve(resp.arrayBuffer);
+      });
+    } catch (e) { reject(e); }
+  });
 }
 
 /**
@@ -150,10 +170,20 @@ async function runDownload(msg) {
             diag.push(`分片${i + 1}/${durl.length} 段${idx + 1}/${parts.length}:${cand.name}:${(e && e.message) || e}`);
           }
         }
+        // 本地所有请求头组合均失败 → 退回 Service Worker 拉流（SW 拥有 host_permissions，CORS 绕过最稳）
+        if (buf === null) {
+          try {
+            buf = await fetchSegmentViaSw(segUrl, winningHeader || VIDEO_FETCH_HEADER_CANDIDATES[0], part.start, part.end);
+            diag.push(`分片${i + 1}/${durl.length} 段${idx + 1}/${parts.length}:SW-FALLBACK:ok(${buf.byteLength}B)`);
+          } catch (e) {
+            lastErr = e;
+            diag.push(`分片${i + 1}/${durl.length} 段${idx + 1}/${parts.length}:SW-FALLBACK:${(e && e.message) || e}`);
+          }
+        }
         if (buf === null) {
           let host = '';
           try { host = new URL(segUrl).hostname; } catch (e) { host = segUrl; }
-          const err = new Error(`视频流分片 ${i + 1}/${durl.length} 下载失败（${host}，最后尝试结果：${(lastErr && lastErr.message) || lastErr}）`);
+          const err = new Error(`视频流分片 ${i + 1}/${durl.length} 下载失败（${host}）；本地与 SW 回退均失败，最后结果：${(lastErr && lastErr.message) || lastErr}。多见于 B站 CDN 防盗链或网络被拦截`);
           err.diagnostic = diag;
           throw err;
         }
