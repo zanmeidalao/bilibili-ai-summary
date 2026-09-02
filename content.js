@@ -21,7 +21,8 @@
   const PROMPT_KEY = 'biliAiSummaryAiPrompt'; // 旧版单提示词（仅用于迁移）
   const PROMPTS_KEY = 'biliAiSummaryPrompts'; // 提示词数组：[{id,name,text,builtin,active}]
   const LAN_KEY = 'biliAiSummaryLan'; // 字幕语言：'auto' 或具体语言代码
-  const QN_KEY = 'biliAiSummaryQn'; // 下载清晰度：16/32/64/80（默认 80=1080p）
+  const QN_KEY = 'biliAiSummaryQn'; // 下载清晰度：16/32/64/80（默认 64=720p，体积小且够清晰）
+  const DL_SAVE_KEY = 'biliAiSummaryDlSaveMode'; // 下载位置：'ask'（每次询问）| 'default'（默认下载文件夹）
   const LAN_DOC_KEY = 'biliAiSummaryLanDoc'; // 语言代码→友好名 缓存（持久化，便于主菜单右侧显示）
   const AI_SITE_KEY = 'biliAiSummaryAiSite'; // AI 模型选择：选中的默认站点 host
   const AI_CONVO_KEY = 'biliAiSummaryAiConvo'; // AI 对话标签：'new'(新建对话) | 'reuse'(沿用对话)，默认 'reuse'
@@ -239,15 +240,52 @@
     } catch (e) { /* ignore */ }
   }
 
-  let dlQn = '80'; // 默认最高清晰度（1080p；下载时按 1080→720→480→360 回退）
+  let dlQn = '64'; // 默认 720p：体积小、清晰够用；下载时按 720→480→360 回退（1080p 可选但体积更大）
   function getQn() { return dlQn; }
   function setQn(v) {
-    dlQn = (v == null) ? '80' : String(v);
+    dlQn = (v == null) ? '64' : String(v);
     try {
       if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
         chrome.storage.local.set({ [QN_KEY]: dlQn });
       }
     } catch (e) { /* ignore */ }
+  }
+
+  // 下载位置：'ask' = 每次弹出系统保存对话框（用户自选位置）；'default' = 浏览器默认下载文件夹
+  let dlSaveMode = 'ask';
+  function getDlSaveMode() { return dlSaveMode; }
+  function setDlSaveMode(v) {
+    dlSaveMode = (v === 'default') ? 'default' : 'ask';
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ [DL_SAVE_KEY]: dlSaveMode });
+      }
+    } catch (e) { /* ignore */ }
+  }
+  // 用于「每次询问」模式：在用户点击时弹出的文件选择器句柄（写盘时复用，无需再次手势）
+  let pendingSaveHandle = null;
+  // 「每次询问」模式的下载端口（句柄经结构化克隆透传给离屏页，由离屏页直接写盘）
+  let dlPort = null;
+  // 收集离屏页回传的视频字节分片（端口结构化克隆，ArrayBuffer 不丢失），收齐后由本页写盘
+  let dlChunks = null;
+  // 看门狗定时器：若后台/离屏页长时间无任何回传，提示多半是旧代码未重载
+  let dlWatchdogTimer = null;
+  // 清洗为合法文件名（与 background 的 sanitizeFilename 保持一致）
+  function sanitizeName(name) {
+    return String(name || 'video')
+      .replace(/[\\/:*?"<>|\r\n\t]+/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120) || 'video';
+  }
+
+  // base64 → Uint8Array（接收离屏页发来的视频字节）
+  function base64ToUint8Array(b64) {
+    const binary = atob(b64);
+    const len = binary.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
   }
 
   // ===================== AI 模型选择 =====================
@@ -673,6 +711,13 @@
       </div>
     </div>
     <div class="p-row">
+      <span class="p-label">下载位置</span>
+      <div class="dd" data-dd="dlSave">
+        <button class="dd-trigger" type="button"><span class="dd-text"></span><span class="dd-caret">▾</span></button>
+        <div class="dd-list" hidden></div>
+      </div>
+    </div>
+    <div class="p-row">
       <span class="p-label">分析提示词</span>
       <button class="p-manage">管理</button>
       <div class="dd" data-dd="prompt">
@@ -704,6 +749,7 @@
   const ddAiSite = panel.querySelector('[data-dd="aiSite"]');
   const ddLan = panel.querySelector('[data-dd="lan"]');
   const ddQn = panel.querySelector('[data-dd="qn"]');
+  const ddDlSave = panel.querySelector('[data-dd="dlSave"]');
   const ddPrompt = panel.querySelector('[data-dd="prompt"]');
 
   function closeAllDropdowns() {
@@ -764,6 +810,14 @@
     getOptions: () => [16, 32, 64, 80].map((q) => ({ value: String(q), label: QN_LABEL[q] || String(q) })),
     get: () => String(getQn()), set: (v) => setQn(v),
     onChange: () => { updateModeUI(); showToast('下载清晰度已设为：' + (QN_LABEL[getQn()] || getQn()), 'ok'); }
+  });
+  const dlSaveDd = setupDropdown(ddDlSave, {
+    getOptions: () => [
+      { value: 'ask', label: '每次询问我保存位置' },
+      { value: 'default', label: '默认下载文件夹' }
+    ],
+    get: () => getDlSaveMode(), set: (v) => setDlSaveMode(v),
+    onChange: () => { updateModeUI(); showToast('下载位置已设为：' + (getDlSaveMode() === 'ask' ? '每次询问我保存位置' : '默认下载文件夹'), 'ok'); }
   });
   const promptDd = setupDropdown(ddPrompt, {
     getOptions: () => [
@@ -918,6 +972,7 @@
     if (aiSiteDd) aiSiteDd.render();
     if (lanDd) lanDd.render();
     if (qnDd) qnDd.render();
+    if (dlSaveDd) dlSaveDd.render();
     if (promptDd) promptDd.render();
     const noSub = btn.classList.contains('no-sub');
     pStatus.textContent = noSub ? '无字幕' : '有字幕';
@@ -992,26 +1047,216 @@
     hidePanel();
     showDlp();
     positionDlp();
-    try {
-      const res = await sendMessage({ type: 'DOWNLOAD_360P', info, qn: getQn() }, 600000); // 10 分钟超时（大文件）
-      if (!res || !res.ok) {
-        throw new Error((res && res.error) || '下载失败');
-      }
-      const r = res.result || {};
-      hideDlp();
-      const diagTail = (r.diagnostic && r.diagnostic.length)
-        ? ' · 已自动尝试多种防盗链请求头'
-        : '';
-      showToast(r.message + diagTail, 'ok');
-    } catch (err) {
-      hideDlp();
-      console.error('[字幕助手] 下载视频失败', err);
-      showToast('下载失败：' + (err && err.message ? err.message : err), 'err');
-      if (err && err.diagnostic && err.diagnostic.length) {
-        console.warn('[字幕助手] 请求头诊断:\n' + err.diagnostic.join('\n'));
+
+    // 决定保存方式：'ask' = 每次弹出系统保存对话框（用户自选位置）；'default' = 浏览器默认下载文件夹
+    let saveMode = getDlSaveMode();
+    pendingSaveHandle = null;
+    const qn = getQn();
+    const suggested = sanitizeName(document.title || 'bilibili视频') + '_' + (QN_LABEL[qn] || qn) + '.mp4';
+    console.log('[字幕助手] ▶ 进入下载流程（新代码已生效） qn=' + qn + ' 保存方式=' + saveMode + ' 文件名=' + suggested);
+    if (saveMode === 'ask') {
+      // 文件选择器需要「用户手势 + 顶层安全上下文」，必须在点击时下手
+      const supportsFs = ('showSaveFilePicker' in window) &&
+        (function () { try { return window.self === window.top; } catch (e) { return false; } })();
+      if (!supportsFs) {
+        saveMode = 'default';
+        showToast('当前环境不支持选择保存位置，将保存到默认下载文件夹', 'warn');
+      } else {
+        try {
+          pendingSaveHandle = await window.showSaveFilePicker({ suggestedName: suggested });
+        } catch (e) {
+          if (e && e.name === 'AbortError') { hideDlp(); showToast('已取消下载', 'warn'); return; }
+          // 其它错误（如权限被拒）→ 退回默认文件夹
+          saveMode = 'default';
+          pendingSaveHandle = null;
+          showToast('无法打开保存对话框，将保存到默认下载文件夹', 'warn');
+        }
       }
     }
+
+    // 统一走端口：后台→离屏页拉流，拉到的视频字节回传本页落盘。
+    //  - ask    模式：pendingSaveHandle 非空，本页用该句柄写到你选的位置；
+    //  - default 模式：pendingSaveHandle 为空，本页用锚点下载到默认下载文件夹。
+    // 关键：字节在本页(renderer)落盘，离屏页只负责拉流，彻底规避离屏页写盘 0 字节问题。
+    try {
+      dlPort = chrome.runtime.connect({ name: 'bili-dl-port' });
+      dlPort.onMessage.addListener(handleDlPort);
+      dlPort.postMessage({
+        type: 'START',
+        requestId: 'dl-' + Date.now() + '-' + Math.floor(Math.random() * 1e6),
+        info,
+        qn,
+        filename: suggested
+      });
+      // 结果由端口异步回报（handleDlPort 处理进度、写盘与完成提示）
+      // 看门狗：30s 内若后台/离屏页无任何回传（连 ACK 都没有），多半是扩展未重载到新代码
+      if (dlWatchdogTimer) clearTimeout(dlWatchdogTimer);
+      dlWatchdogTimer = setTimeout(() => {
+        try {
+          if (dlChunks === null && dlPort) {
+            hideDlp();
+            showToast('下载无响应：请先到扩展管理页「重新加载」本扩展，再按 F5 刷新B站视频页后重试', 'err');
+          }
+        } catch (e) { /* ignore */ }
+      }, 30000);
+    } catch (e) {
+      hideDlp();
+      showToast('下载通道不可用：' + ((e && e.message) || e), 'err');
+      pendingSaveHandle = null;
+    }
   }
+
+  /** 处理下载端口回传的消息：进度 / 视频字节分片 / 完成 */
+  function handleDlPort(m) {
+    // 任意回传都清除看门狗（证明后台/离屏页在正常工作）
+    if (dlWatchdogTimer) { clearTimeout(dlWatchdogTimer); dlWatchdogTimer = null; }
+    if (!m) return;
+    if (m.type === 'DL_ACK') {
+      console.log('[字幕助手] 后台已收到下载请求（新代码生效），开始解析视频地址…');
+      return;
+    }
+    if (m.type === 'DL_INFO') {
+      console.log('[字幕助手] 后台解析完成：清晰度=' + (m.qualityLabel || m.quality || '?') + ' 分片数=' + (m.segCount || '?') + ' 文件名=' + (m.filename || ''));
+      if (m.acceptQn && m.acceptQn.length) console.log('[字幕助手] 可用清晰度列表 accept_quality=' + m.acceptQn.join(','));
+      if (m.hasDash) console.log('[字幕助手] DASH 格式可用（1080p+ 在 DASH 内，音视频分离）');
+      if (m.note) console.log('[字幕助手] 提示：' + m.note);
+      if (dlpText) dlpText.textContent = '已解析 ' + (m.qualityLabel || '') + '，开始拉流…';
+      return;
+    }
+    if (m.type === 'DL_LOG') {
+      console.log('[字幕助手] ' + (m.text || ''));
+      return;
+    }
+    if (m.type === 'PROGRESS') {
+      const total = Number(m.total) || 0;
+      const received = Number(m.received) || 0;
+      const pct = total > 0 ? (received / total) * 100 : 0;
+      updateDlp(pct, formatDlpText(m));
+      return;
+    }
+    if (m.type === 'DL_CHUNK') {
+      // 收集离屏页回传的视频字节分片（base64 文本，解码为 Uint8Array）
+      if (!dlChunks) dlChunks = { filename: m.filename, count: m.count, parts: new Array(m.count), received: 0 };
+      try {
+        const bin = atob(m.b64);
+        const arr = new Uint8Array(bin.length);
+        for (let j = 0; j < bin.length; j++) arr[j] = bin.charCodeAt(j);
+        dlChunks.parts[m.index] = arr;
+      } catch (e) {
+        console.error('[字幕助手] 分片 base64 解码失败 index=' + m.index, e);
+      }
+      dlChunks.received++;
+      if (dlpText) dlpText.textContent = '正在接收视频数据… (' + dlChunks.received + '/' + dlChunks.count + ')';
+      // 每收到约 10% 打个点，便于判断分片是否真正在传输
+      if (dlChunks.received === 1 || dlChunks.received % Math.max(1, Math.floor(dlChunks.count / 10)) === 0 || dlChunks.received === dlChunks.count) {
+        console.log('[字幕助手] 接收分片进度 ' + dlChunks.received + '/' + dlChunks.count);
+      }
+      if (dlChunks.received === dlChunks.count) {
+        // 全部到齐 → 按索引顺序拼接成完整视频字节
+        let total = 0;
+        for (let i = 0; i < dlChunks.count; i++) total += (dlChunks.parts[i] ? dlChunks.parts[i].length : 0);
+        const all = new Uint8Array(total);
+        let off = 0;
+        for (let i = 0; i < dlChunks.count; i++) {
+          const part = dlChunks.parts[i];
+          if (!part) { console.error('[字幕助手] 视频分片缺失 index=' + i); continue; }
+          all.set(part, off);
+          off += part.length;
+        }
+        const handle = pendingSaveHandle;
+        pendingSaveHandle = null;
+        const fname = dlChunks.filename;
+        dlChunks = null;
+        console.log('[字幕助手] 收齐视频字节，总长度=' + all.byteLength);
+        writeDlBytes(all, handle, fname);
+      }
+      return;
+    }
+    if (m.type === 'DL_END') {
+      // 诊断：明确离屏页到底拉到了多少字节（fetchedBytes），与本地收齐长度对照，定位 0 字节根因
+      if (m.fetchedBytes != null) {
+        console.log('[字幕助手] 离屏页 fetchedBytes=' + m.fetchedBytes + '，本地已收到分片=' + (dlChunks ? dlChunks.received : 0));
+      }
+      if (!m.ok) {
+        hideDlp();
+        showToast('下载失败：' + (m.error || '拉流失败'), 'err');
+        dlChunks = null;
+        if (dlPort) { try { dlPort.disconnect(); } catch (e) { /* ignore */ } dlPort = null; }
+      } else if (dlChunks && dlChunks.received < dlChunks.count) {
+        // offscreen 已经发完 DL_END，但页面还有分片没到：端口丢包了
+        hideDlp();
+        showToast('下载失败：视频分片在传输中丢失（收到 ' + dlChunks.received + '/' + dlChunks.count + '），请换较低清晰度重试', 'err');
+        console.error('[字幕助手] DL_END 提前到达，分片未收齐', dlChunks.received, '/', dlChunks.count);
+        dlChunks = null;
+        if (dlPort) { try { dlPort.disconnect(); } catch (e) { /* ignore */ } dlPort = null; }
+      }
+      // ok 且分片已收齐时，写盘已在收齐分片时(writeDlBytes)完成，这里无需重复处理
+      return;
+    }
+  }
+
+  /** 把拼接好的视频字节落盘：ask 模式用用户选中的文件句柄，default 模式用锚点下载到默认文件夹 */
+  async function writeDlBytes(all, handle, fname) {
+    // 防御：0 字节不落盘，避免产生无用的 0 字节文件，并给出明确提示（旧代码才会收到 0 字节）
+    if (!all || all.byteLength === 0) {
+      hideDlp();
+      showToast('收到 0 字节视频，下载未成功：请确认扩展已「重新加载」到最新版（旧版会出现此 0 字节问题），再按 F5 刷新本页重试', 'err');
+      console.error('[字幕助手] 收齐的视频字节为 0，已拒绝写入 0 字节文件');
+      if (dlPort) { try { dlPort.disconnect(); } catch (e2) { /* ignore */ } dlPort = null; }
+      return;
+    }
+    try {
+      if (dlpText) dlpText.textContent = '正在写入文件…';
+      if (handle) {
+        // 普通渲染进程(renderer) 的 File System Access 写盘最可靠，不会再出现 0 字节
+        const writable = await handle.createWritable();
+        await writable.write(all);
+        await writable.close();
+        hideDlp();
+        showToast('已保存：' + (handle.name || fname), 'ok');
+        console.log('[字幕助手] 写盘完成，字节数=' + all.byteLength);
+      } else {
+        fallbackAnchorDownload(all, fname);
+        hideDlp();
+        showToast('已保存到默认下载文件夹：' + (fname || ''), 'ok');
+      }
+    } catch (e) {
+      hideDlp();
+      showToast('保存失败：' + ((e && e.message) || e), 'err');
+      console.error('[字幕助手] 写盘失败', e);
+    }
+    if (dlPort) { try { dlPort.disconnect(); } catch (e2) { /* ignore */ } dlPort = null; }
+  }
+
+  // 兜底：仅在异常时触发（default 模式本由离屏页直接下载）。在页面内用锚点下载字节。
+  function fallbackAnchorDownload(ab, filename) {
+    try {
+      const blob = new Blob([ab], { type: 'video/mp4' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename || 'video.mp4';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } }, 60000);
+    } catch (e) { /* ignore */ }
+  }
+
+  // 下载落盘最终态：default 模式由离屏页锚点下载完成后经 background 转发而来。
+  // ask 模式的最终态由端口(handleDlPort)处理，不走这条 onMessage。
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (!msg || msg.type !== 'DOWNLOAD_DONE') return undefined;
+    hideDlp();
+    if (msg.ok) {
+      const name = msg.filename ? msg.filename.split('/').pop() : '';
+      showToast(name ? ('已保存：' + name) : '文件已保存 ✓', 'ok');
+    } else {
+      showToast('下载失败：' + (msg.error || '保存被中断'), 'err');
+    }
+    return undefined;
+  });
 
   // 拖拽 & 点击：仅主键(左键)进入拖拽/点击判定；右键只弹菜单，绝不触发复制
   let dragging = false, moved = false, startX = 0, startY = 0, origX = 0, origY = 0;
@@ -1257,7 +1502,8 @@
             }
             if (res && res[LAN_KEY]) subLan = res[LAN_KEY];
             if (res && res[LAN_DOC_KEY] && typeof res[LAN_DOC_KEY] === 'object') lanDocCache = res[LAN_DOC_KEY];
-            if (res && res[QN_KEY]) dlQn = String(res[QN_KEY]) === 'auto' ? '80' : String(res[QN_KEY]);
+            if (res && res[QN_KEY]) dlQn = String(res[QN_KEY]) === 'auto' ? '64' : String(res[QN_KEY]);
+          if (res && res[DL_SAVE_KEY]) dlSaveMode = res[DL_SAVE_KEY] === 'default' ? 'default' : 'ask';
             if (res && res[AI_SITE_KEY]) aiSite = String(res[AI_SITE_KEY]);
             if (res && res[AI_CONVO_KEY]) aiConvoMode = (res[AI_CONVO_KEY] === 'new') ? 'new' : 'reuse';
             updateModeUI();
@@ -1277,9 +1523,10 @@
           if (changes[LAN_KEY]) { subLan = changes[LAN_KEY].newValue || 'auto'; updateModeUI(); }
           if (changes[QN_KEY]) {
             const q = String(changes[QN_KEY].newValue || '80');
-            dlQn = q === 'auto' ? '80' : q; // 兼容旧版遗留的 'auto' 值（已无对应 UI 选项）
+            dlQn = q === 'auto' ? '64' : q; // 兼容旧版遗留的 'auto' 值（已无对应 UI 选项）
             updateModeUI();
           }
+          if (changes[DL_SAVE_KEY]) { dlSaveMode = (changes[DL_SAVE_KEY].newValue === 'default') ? 'default' : 'ask'; updateModeUI(); }
           if (changes[AI_SITE_KEY]) { aiSite = changes[AI_SITE_KEY].newValue || DEFAULT_AI_SITE; updateModeUI(); }
           if (changes[AI_CONVO_KEY]) { aiConvoMode = (changes[AI_CONVO_KEY].newValue === 'new') ? 'new' : 'reuse'; updateModeUI(); }
         });

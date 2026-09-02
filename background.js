@@ -448,13 +448,30 @@ async function fetchPlayUrlDurl(bvid, cid, qn) {
   // platform=html5 是关键：B 站给"html5 播放器"返回的 durl 走播放器同款 CDN 节点
   // （cn-gddg-* 等直连节点），防盗链允许 html5 式请求；不带此参数会返回
   // upos-sz-* 对象存储节点，防盗链极严（专防下载工具），几乎必然 403。
-  const q = await wbiSign({ bvid, cid, qn, fnval: 0, platform: 'html5', high_quality: 1 });
+  // 注意：绝不能带 high_quality:1 —— 该参数会强制返回该清晰度下"最高码率"编码，
+  // 体积会膨胀数倍（例如 1080p 两分钟视频从 ~200MB 暴涨到 1.19GB）。
+  // 去掉后返回标准码率，体积正常且清晰度肉眼无差别。
+  const q = await wbiSign({ bvid, cid, qn, fnval: 0, platform: 'html5' });
   const r = await getJson(`https://api.bilibili.com/x/player/wbi/playurl?${q}`, 2);
+  // B站 playurl 的 qn 是"最低要求"，接口可能返回更高清晰度（如请求 80 返回 112/4K）。
+  // 这里记录实际返回的 quality，便于上层 enforce 不超出用户选择。
+  const actualQn = Number(r.data && r.data.quality) || qn;
+  const acceptQn = (r.data && r.data.accept_quality) || [];
   const durl = (r.data && r.data.durl) || [];
   const withUrl = durl.filter((d) => d && d.url);
   // 优先取非空 size 的分片；若全部缺 size（部分接口返回不含 size），退而使用全部有 url 的
   const sized = withUrl.filter((d) => Number(d.size) > 0);
-  return sized.length ? sized : withUrl;
+  const list = sized.length ? sized : withUrl;
+  // DASH 格式诊断：fnval>=16 时才返回 dash，且 1080p+ 普遍只在 dash 里提供（durl 最高 720p）
+  const hasDash = !!(r.data && r.data.dash);
+  if (hasDash) {
+    const dv = (r.data.dash.video || []).map((v) => v.id).join(',');
+    const da = (r.data.dash.audio || []).length;
+    console.log(`[字幕助手] DASH 可用：video清晰度=[${dv}]，audio流数=${da}`);
+  } else {
+    console.log(`[字幕助手] 未返回 DASH（fnval=0 仅 durl 格式，最高 720p），accept_quality=${acceptQn.join(',')}`);
+  }
+  return { list, actualQn, acceptQn, hasDash };
 }
 
 /** 确保 offscreen document 存在（离屏页负责分片拉取 + blob 生成）。
@@ -473,10 +490,8 @@ async function ensureOffscreen() {
   await offscreenCreating;
 }
 
-// 下载任务 id → 发起下载的标签页 id 映射（进度转发用）
+// 下载任务 id(requestId) → 发起下载的标签页 id 映射（进度转发用，待 DOWNLOAD_DONE 再清理）
 const downloadTabMap = new Map();
-// 下载任务 id → blob URL 映射：落盘完成后回收，避免 offscreen 内存泄漏（P0-1）
-const downloadBlobMap = new Map();
 let downloadSeq = 0;
 
 /** 通知页面 content script 显示/更新下载进度 */
@@ -495,6 +510,27 @@ chrome.runtime.onMessage.addListener((msg) => {
   return undefined;
 });
 
+/**
+ * 离屏页下载落盘完成后回报（成功/失败）：转发最终态给页面并清理任务映射。
+ * 落盘进度由 offscreen 直接发来，经上面的 DOWNLOAD_PROGRESS 监听转发给页面。
+ */
+chrome.runtime.onMessage.addListener((msg) => {
+  if (!msg || msg.type !== 'DOWNLOAD_DONE') return undefined;
+  const tabId = downloadTabMap.get(msg.requestId);
+  if (tabId) {
+    try {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'DOWNLOAD_DONE',
+        ok: !!msg.ok,
+        error: msg.error || '',
+        filename: msg.filename || ''
+      });
+    } catch (e) { /* 标签页可能已关闭 */ }
+    downloadTabMap.delete(msg.requestId);
+  }
+  return undefined;
+});
+
 /** 离屏页 CDN 拉流失败时，由 SW 兜底拉取视频分片（SW 拥有 host_permissions，CORS 绕过最稳） */
 async function fetchSegmentInSw(url, headers, credentials) {
   const resp = await fetch(url, { credentials: credentials || 'omit', headers });
@@ -509,58 +545,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // 异步 sendResponse
 });
 
-/** 落盘进度：chrome.downloads.onChanged → 转发给页面（显示 "已下载 xx%"），并在任务终结时回收资源 */
-chrome.downloads.onChanged.addListener((delta) => {
-  if (!delta || !delta.id) return;
-  const key = 'dl-' + delta.id;
-  const state = delta.state && delta.state.current;
-  const received = delta.bytesReceived && delta.bytesReceived.current;
-  const total = delta.totalBytes && delta.totalBytes.current;
-  forwardProgress(key, {
-    type: 'DOWNLOAD_PROGRESS',
-    phase: 'save',
-    received,
-    total,
-    state
-  });
-  // 任务终结（完成/中断/失败）→ 回收 blob URL 并清理映射，避免 offscreen 内存泄漏与映射堆积（P0-1/P2-8）
-  if (state === 'complete' || state === 'interrupted') {
-    const blobUrl = downloadBlobMap.get(key);
-    if (blobUrl) {
-      try { chrome.runtime.sendMessage({ type: 'REVOKE_BLOB', blobUrl }); } catch (e) { /* offscreen 可能已回收 */ }
-      downloadBlobMap.delete(key);
-    }
-    downloadTabMap.delete(key);
-  }
-});
-
 /**
- * 通过 offscreen 下载分片并落盘。
- * @returns blobUrl / totalBytes / filename / diagnostic
+ * 通过 offscreen 拉取分片并拼接成完整视频字节，再按 saveMode 落盘：
+ *  - 'ask'     → 把字节发回页面，由页面用文件选择器写到用户指定位置；
+ *  - 'default' → 离屏页锚点下载到浏览器默认下载文件夹。
+ * @returns { started, totalBytes, filename, diagnostic }
  */
-async function downloadViaOffscreen(durl, filename, tabId, requestId) {
+async function downloadViaOffscreen(durl, filename, tabId, requestId, saveMode) {
   await ensureOffscreen();
   let resp;
+  const payload = { type: 'DOWNLOAD_START', requestId, durl, filename, saveMode: saveMode || 'default' };
   try {
-    resp = await chrome.runtime.sendMessage({ type: 'DOWNLOAD_START', requestId, durl, filename });
+    resp = await chrome.runtime.sendMessage(payload);
   } catch (e) {
     // 离屏页可能刚被回收：重建后重试一次（P0-2）
     try { await ensureOffscreen(); } catch (e2) { /* ignore */ }
-    resp = await chrome.runtime.sendMessage({ type: 'DOWNLOAD_START', requestId, durl, filename });
+    resp = await chrome.runtime.sendMessage(payload);
   }
   if (!resp || !resp.ok) {
     const err = new Error((resp && resp.error) || '离屏下载失败');
     if (resp && resp.error && resp.error.includes('诊断')) err.diagnostic = resp.error;
     throw err;
   }
-  if (tabId) downloadTabMap.delete(requestId); // offscreen 拉流阶段结束，清理任务级映射（P2-8）
+  // requestId→tabId 映射保留至下载彻底完成（DOWNLOAD_DONE）再清理，
+  // 否则离屏页转发的 save 阶段 DOWNLOAD_PROGRESS 找不到目标标签页
   return resp.result;
 }
 
 /** 主下载流程：view → playurl(指定清晰度，缺失则逐级回退) → offscreen 拉流 → 落盘
  * @param preferredQn 用户指定清晰度（16/32/64/80 或 'auto'）；auto 沿用原 360p 优先链
  */
-async function downloadVideo(info, tabId, preferredQn) {
+/** 解析可下载视频流地址与文件名（清晰度优先 + 逐级回退）。供默认(sendMessage)与询问(端口)两种下载模式共用。 */
+async function resolveDownload(info, preferredQn) {
   if (!info || !info.bvid) throw new Error('未识别到视频（仅支持视频页）');
 
   const data = await fetchView(info.bvid);
@@ -574,22 +590,41 @@ async function downloadVideo(info, tabId, preferredQn) {
 
   // 清晰度标签（含 1080p）
   const usedLabels = { 16: '360p', 32: '480p', 64: '720p', 80: '1080p' };
-  // 用户指定清晰度则优先，失败再按 1080→720→480→360 回退；未指定（含旧版 'auto'）同样用 1080p 优先链
+  // B站 playurl 的 qn 是"最低要求"，接口可能返回比请求更高的清晰度（如请求 80 实际返回 112/4K）。
+  // 因此回退策略必须同时校验：1) 有可用 durl；2) 实际返回的 quality <= 请求的 qn。
+  // 候选清晰度按「请求值 → 更小的可用值」排列，体积优先、只降不升。
+  const allQualities = [80, 64, 32, 16];
   let qnCandidates;
   if (preferredQn && preferredQn !== 'auto') {
-    const pq = Number(preferredQn);
-    qnCandidates = [pq, ...[80, 64, 32, 16].filter((q) => q !== pq)];
+    const pq = Number(preferredQn) || 80;
+    qnCandidates = [pq, ...allQualities.filter((q) => q < pq)];
   } else {
-    qnCandidates = [80, 64, 32, 16];
+    qnCandidates = allQualities; // 默认 720p 起，由高到低尝试
   }
   let durl = null;
   let usedQn = null;
   let lastPlayErr = null;
+  let lastActualQn = null;
+  let lastAcceptQn = null;
+  let lastDash = false;
   for (const qn of qnCandidates) {
     try {
-      const list = await fetchPlayUrlDurl(bvid, cid, qn);
-      // fetchPlayUrlDurl 已过滤无 url 项；只要拿到非空列表即视为该清晰度可用
-      if (list.length) { durl = list; usedQn = qn; break; }
+      const res = await fetchPlayUrlDurl(bvid, cid, qn);
+      lastActualQn = res.actualQn;
+      lastAcceptQn = res.acceptQn;
+      lastDash = res.hasDash;
+      if (!res.list.length) {
+        console.warn(`[字幕助手] playurl qn=${qn} 无可用分片，继续回退`);
+        continue;
+      }
+      // 关键：实际返回的清晰度必须 <= 请求的清晰度，否则继续往下降
+      if (res.actualQn > qn) {
+        console.warn(`[字幕助手] playurl 请求 qn=${qn}，但接口实际返回 quality=${res.actualQn}（更高），继续回退`);
+        continue;
+      }
+      durl = res.list;
+      usedQn = res.actualQn; // 用实际清晰度（可能低于请求，但绝不会更高）
+      break;
     } catch (e) {
       lastPlayErr = e;
       console.warn(`[字幕助手] playurl qn=${qn} 失败，继续回退：`, e);
@@ -601,33 +636,34 @@ async function downloadVideo(info, tabId, preferredQn) {
     if (/Failed to fetch|TypeError|network/i.test(m)) {
       throw new Error('获取播放地址失败：网络请求被拦截（请确认扩展已重新加载到最新版，并在浏览器登录了 B 站）');
     }
-    throw new Error('该视频当前无可下载的视频流（可能需登录 B 站，或该清晰度不可用）');
+    const extra = lastActualQn ? `（最后一次接口返回 quality=${lastActualQn}，可接受列表=${(lastAcceptQn || []).join(',') || '无'}）` : '';
+    throw new Error('该视频当前无可下载的视频流（可能需登录 B 站，或该清晰度不可用）' + extra);
   }
+
+  const durLabel = duration ? `（${Math.round(duration)}s）` : '';
+  // 文件名不再带子目录（避免保存到非预期路径）；用户可在「每次询问」模式下自行选择文件夹
+  const filename = `${sanitizeFilename(title)}_${usedQn ? usedLabels[usedQn] : '视频'}${durLabel}.mp4`;
+  // 预估总体积（分片 size 之和，仅供参考；B站偶尔 size 元数据不准，实际以下载为准）
+  const totalSize = durl.reduce((s, d) => s + (Number(d.size) || 0), 0);
+  const sizeMB = totalSize > 0 ? (totalSize / 1024 / 1024).toFixed(1) + 'MB' : '未知';
+  console.log(`[字幕助手] 最终选定清晰度 quality=${usedQn}（${usedLabels[usedQn] || usedQn}），预估体积≈${sizeMB}，分片数=${durl.length}，文件名=${filename}`);
+  return { durl, filename, usedQn, bvid, cid, acceptQn: lastAcceptQn, hasDash: !!lastDash };
+}
+
+async function downloadVideo(info, tabId, preferredQn, saveMode) {
+  if (!info || !info.bvid) throw new Error('未识别到视频（仅支持视频页）');
+  const { durl, filename, usedQn } = await resolveDownload(info, preferredQn);
+  const usedLabels = { 16: '360p', 32: '480p', 64: '720p', 80: '1080p' };
 
   // 构造任务 id 并登记发起标签页（进度转发用）
   const requestId = 'task-' + (++downloadSeq);
   if (tabId) downloadTabMap.set(requestId, tabId);
 
-  const durLabel = duration ? `（${Math.round(duration)}s）` : '';
-  const filename = `bilibili视频/${sanitizeFilename(title)}_${usedQn ? usedLabels[usedQn] : '视频'}${durLabel}.mp4`;
-
-  // 让离屏页面拉取分片并生成 blob URL（页面收到进度，先显示"拉取中"）
-  const off = await downloadViaOffscreen(durl, filename, tabId, requestId);
-
-  // 触发浏览器原生下载（从 blob URL 读字节写入磁盘；自动保存到默认下载目录，不弹窗选择位置）
-  let dlId;
-  try {
-    dlId = await chrome.downloads.download({ url: off.blobUrl, filename });
-  } catch (e) {
-    // 落盘失败：回收 blob，避免泄漏（P0-1）
-    try { chrome.runtime.sendMessage({ type: 'REVOKE_BLOB', blobUrl: off.blobUrl }); } catch (e2) { /* ignore */ }
-    throw e;
-  }
-  // 落盘进度关联 + blob 回收登记：downloads id → requestId（onChanged 里转发并回收）
-  if (dlId && tabId) {
-    downloadTabMap.set('dl-' + dlId, tabId);
-    downloadBlobMap.set('dl-' + dlId, off.blobUrl);
-  }
+  // 让离屏页面拉取分片并拼接成字节：
+  //  - saveMode='ask'   → 离屏页把字节发回页面，由页面用「文件选择器」写到用户指定的位置；
+  //  - saveMode='default' → 离屏页用锚点下载（渲染进程读取自有 blob，可靠）存到默认下载文件夹。
+  // 不再使用 chrome.downloads.download(blobUrl)：下载网络服务无法解析扩展 blob URL，会静默失败。
+  const off = await downloadViaOffscreen(durl, filename, tabId, requestId, saveMode);
 
   const totalBytes = off.totalBytes || 0;
   return {
@@ -637,6 +673,82 @@ async function downloadVideo(info, tabId, preferredQn) {
     diagnostic: off.diagnostic // 供诊断排障
   };
 }
+
+// ==================== 下载端口中继（"每次询问位置"模式） ====================
+// content 在用户点击时弹出「文件选择器」拿到句柄(FileSystemFileHandle)，该对象只能经
+// 结构化克隆的端口传递，无法走 JSON 化的 sendMessage。故走：
+//   content ──port(bili-dl-port)──▶ background ──port(bili-dl-off)──▶ offscreen(持句柄直接写盘)
+// offscreen 回报的 PROGRESS/DONE 沿原路中继回 content。
+// 按 requestId 维护「页面端口 ↔ 离屏端口」映射，支持连续多次下载互不串台
+const dlPortMap = new Map(); // requestId -> { contentPort, offPort }
+chrome.runtime.onConnect.addListener((port) => {
+  if (!port || port.name !== 'bili-dl-port') return;
+  port.onMessage.addListener(async (msg) => {
+    if (!msg || msg.type !== 'START') return;
+    // 立即回执：证明后台(新代码)已收到，避免前端看门狗误报「无响应」
+    try { port.postMessage({ type: 'DL_ACK', requestId: msg.requestId }); } catch (e) { /* ignore */ }
+    try {
+      const info = await resolveDownload(msg.info, msg.qn);
+      await ensureOffscreen();
+      // 新创建的离屏页可能还在完成 JS 初始化，稍等 200ms 再连，避免 START 消息被漏接
+      await new Promise((r) => setTimeout(r, 200));
+      const offPort = chrome.runtime.connect({ name: 'bili-dl-off' });
+      dlPortMap.set(msg.requestId, { contentPort: port, offPort });
+      let offTimer = null;
+      const resetOffTimer = () => {
+        if (offTimer) clearTimeout(offTimer);
+        offTimer = setTimeout(() => {
+          try { port.postMessage({ type: 'DL_END', requestId: msg.requestId, ok: false, error: '离屏页传输超时（20秒内无新消息），请确认扩展已重新加载后重试' }); } catch (e) { /* ignore */ }
+          try { offPort.disconnect(); } catch (e) { /* ignore */ }
+          dlPortMap.delete(msg.requestId);
+        }, 20000);
+      };
+      offPort.onMessage.addListener((m) => {
+        resetOffTimer(); // 每收到一条消息重置计时器，避免大文件分片传输中误触发
+        try {
+          if (m && m.requestId == null) m.requestId = msg.requestId;
+          if (port) port.postMessage(m);
+        } catch (e) { /* ignore */ }
+      });
+      offPort.onDisconnect.addListener(() => { if (offTimer) clearTimeout(offTimer); dlPortMap.delete(msg.requestId); });
+      // 离屏页 20s 内无任何消息，认为它没收到/卡死，直接报失败（避免空文件）
+      resetOffTimer();
+      // 把解析结果回报页面（页面 F12 控制台可见，便于排障；清晰度/分片数一目了然）
+      const qLabels = { 16: '360p', 32: '480p', 64: '720p', 80: '1080p' };
+      let note = '';
+      // 用户选了更高清晰度但实际未拿到时，给出明确原因，避免用户以为选错
+      if (Number(msg.qn) > Number(info.usedQn)) {
+        if (info.acceptQn && info.acceptQn.length && !info.acceptQn.includes(Number(msg.qn))) {
+          note = '当前账号/视频未开放 ' + qLabels[Number(msg.qn)] + ' 下载，B站返回的可用清晰度为 ' + info.acceptQn.map((q) => qLabels[q] || q).join('/') + '，已自动降级为 ' + qLabels[info.usedQn] + '。如需 1080p，请确认浏览器已登录大会员账号';
+        } else if (info.hasDash) {
+          note = '该视频 1080p+ 仅在 DASH 格式（音视频分离），当前下载通道仅支持 durl(flv，最高720p)。如需 1080p，请在后续版本选择 DASH';
+        }
+      }
+      try {
+        port.postMessage({
+          type: 'DL_INFO',
+          requestId: msg.requestId,
+          quality: info.usedQn,
+          qualityLabel: qLabels[info.usedQn] || String(info.usedQn || ''),
+          segCount: info.durl.length,
+          filename: info.filename,
+          hasDash: !!info.hasDash,
+          acceptQn: info.acceptQn || [],
+          note
+        });
+      } catch (e) { /* ignore */ }
+      // 把解析好的视频流地址与文件名交给离屏页拉流（拉到的字节由离屏页切片回传本页，本页再落盘）
+      offPort.postMessage({ type: 'START', requestId: msg.requestId, durl: info.durl, filename: info.filename });
+    } catch (e) {
+      try { port.postMessage({ type: 'DL_END', requestId: msg.requestId, ok: false, error: String((e && e.message) || e) }); } catch (e2) { /* ignore */ }
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    for (const [rid, v] of dlPortMap) {
+      if (v.contentPort === port) { try { v.offPort.disconnect(); } catch (e) { /* ignore */ } dlPortMap.delete(rid); }
+    }
+  });
+});
 
 // ==================== 发送到右侧 AI 标签页 ====================
 // 受支持站点以 shared.js 的 AI_SITE_NAMES 为唯一来源（manifest 中 ai-content.js
@@ -855,7 +967,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
       return true;
     case 'DOWNLOAD_360P':
-      downloadVideo(msg.info, tabId, msg.qn)
+      downloadVideo(msg.info, tabId, msg.qn, msg.saveMode)
         .then((r) => sendResponse({ ok: true, result: r }))
         .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
       return true;

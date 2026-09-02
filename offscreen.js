@@ -18,9 +18,9 @@
 'use strict';
 
 // ==================== 下载参数 ====================
-const SEGMENT_SIZE = 4 * 1024 * 1024; // 每段 4MB（Range 分段粒度）
-const CONCURRENCY = 5;                // 同时下载的段数（并发提速核心）
-const lastProgressReport = {};        // 按 requestId 各自的进度上报节流时间戳（避免多任务并发互相抑制）
+const SEGMENT_SIZE = 4 * 1024 * 1024;   // 每段 4MB（Range 分段粒度）
+const CONCURRENCY = 5;                  // 同时下载的段数（并发提速核心）
+const lastProgressReport = {};          // 按 requestId 各自的进度上报节流时间戳（避免多任务并发互相抑制）
 
 // ==================== 请求头组合（与播放器行为对齐，优先带登录态） ====================
 // Range 由 fetchSegment 统一附加，这里只列 Referer/Origin/Cookie/UA 组合。
@@ -120,11 +120,13 @@ function concatBuffers(buffers) {
   return out.buffer;
 }
 
+
+
 /**
  * 主下载流程（由 background 触发）。
  * @param msg { type:'DOWNLOAD_START', requestId, durl:[{url,size}], filename }
  */
-async function runDownload(msg) {
+async function runDownload(msg, onProgress) {
   const { durl, filename } = msg;
   const totalSize = durl.reduce((s, d) => s + (Number(d.size) || 0), 0);
 
@@ -133,8 +135,13 @@ async function runDownload(msg) {
   let winningHeader = null;   // 首个成功的请求头组合（缓存复用，避免每段重试）
   const allParts = [];        // 每个 durl 分片拼接后的 buffer
 
+  // 进度回调：端口模式走 onProgress（结构化克隆回传），否则走 sendMessage（DOWNLOAD_PROGRESS）
+  const reportFn = onProgress
+    ? (received, total, segDone, segCount) => { try { onProgress({ received, total, segDone, segCount }); } catch (e) { /* ignore */ } }
+    : (received, total, segDone, segCount) => reportProgress(msg, received, total, segDone, segCount);
+
   // 先回报一次让页面立刻进入"拉取中"
-  reportProgress(msg, 0, totalSize || 1, 0, durl.length);
+  reportFn(0, totalSize || 1, 0, durl.length);
 
   for (let i = 0; i < durl.length; i++) {
     const segUrl = durl[i].url;
@@ -142,7 +149,7 @@ async function runDownload(msg) {
     const parts = planSegments(segSize);
     const segBuffers = new Array(parts.length);
 
-    const report = () => reportProgress(msg, receivedBytes, totalSize || receivedBytes || 1, i + 1, durl.length);
+    const report = () => reportFn(receivedBytes, totalSize || receivedBytes || 1, i + 1, durl.length);
 
     // 并发拉取各段：worker 池，同时最多 CONCURRENCY 个
     let cursor = 0;
@@ -199,13 +206,13 @@ async function runDownload(msg) {
     report();
   }
 
-  // 全部拉取完成 → 合成 blob → 生成 blob URL
+  // 全部拉取完成 → 拼接成最终字节（交给离屏页/页面落盘，不再自己生成 blob URL）。
+  // 注意：chrome.downloads.download 无法解析扩展 blob URL（下载网络服务跨进程取不到），
+  // 所以这里只产出裸字节，由 DOWNLOAD_START 处理器按 saveMode 选择可靠的落盘方式。
   const finalBuf = allParts.length === 1 ? allParts[0] : concatBuffers(allParts);
-  const blob = new Blob([finalBuf], { type: 'video/mp4' });
-  const blobUrl = URL.createObjectURL(blob);
 
   return {
-    blobUrl,
+    finalBuf,
     totalBytes: receivedBytes,
     filename,
     diagnostic: diag
@@ -232,19 +239,119 @@ function reportProgress(msg, received, total, segDone, segCount) {
   } catch (e) { /* background 可能已休眠，忽略 */ }
 }
 
-// ==================== 消息入口 ====================
+// ==================== 落盘辅助 ====================
+/** 默认文件夹：在离屏页本地下锚点下载（渲染进程读取自有 blob，可靠） */
+function anchorDownload(filename, finalBuf, onDone) {
+  try {
+    const blob = new Blob([finalBuf], { type: 'video/mp4' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.documentElement.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } }, 60000);
+  } catch (e) { /* 交由 onDone 回报失败 */ }
+  onDone(true, filename, '');
+}
+
+// ==================== 消息入口（sendMessage：默认文件夹模式） ====================
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type) return undefined;
-  if (msg.type === 'REVOKE_BLOB') {
-    // background 在下载落盘完成后回调，释放 blob URL，避免离屏页内存泄漏（P0-1）
-    try { URL.revokeObjectURL(msg.blobUrl); } catch (e) { /* ignore */ }
-    return undefined;
-  }
   if (msg.type === 'DOWNLOAD_START') {
     runDownload(msg)
-      .then((r) => sendResponse({ ok: true, result: r }))
-      .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+      .then((r) => {
+        // sendMessage 链路走默认文件夹锚点下载（句柄无法经 JSON 传递，故询问模式走端口）
+        anchorDownload(r.filename, r.finalBuf, (ok, filename, error) => {
+          chrome.runtime.sendMessage({
+            type: 'DOWNLOAD_DONE',
+            requestId: msg.requestId,
+            ok,
+            filename,
+            error: ok ? '' : error
+          });
+        });
+        sendResponse({ ok: true, result: { started: true, totalBytes: r.totalBytes, filename: r.filename, diagnostic: r.diagnostic } });
+      })
+      .catch((e) => chrome.runtime.sendMessage({
+        type: 'DOWNLOAD_DONE',
+        requestId: msg.requestId,
+        ok: false,
+        error: String((e && e.message) || e)
+      }));
     return true; // 异步 sendResponse
   }
   return undefined;
 });
+
+// ==================== 端口入口（"每次询问位置"模式：拉流后把字节回传页面） ====================
+// 关键教训（历经多轮调试）：
+//  1) 离屏页写盘(File System Access)不可靠 → 0 字节；
+//  2) 经端口用裸 ArrayBuffer 回传页面，在两跳结构化克隆中继里字节会被清空 → 0 字节。
+// 故这里**只拉流**，并把完整视频字节**以 base64 文本**分片回传（base64 是普通字符串，
+// 不受任何 ArrayBuffer 克隆/转移影响），由页面(普通 renderer) 解码后写到用户选好的位置——最可靠。
+// 对 Uint8Array（或子视图）做 base64 编码，严格按视图边界，不会把底层整段 buffer 都编码进去
+function bytesToBase64(u8) {
+  const len = u8.length;
+  let binary = '';
+  const step = 8192;
+  for (let i = 0; i < len; i += step) {
+    binary += String.fromCharCode.apply(null, u8.subarray(i, Math.min(i + step, len)));
+  }
+  return btoa(binary);
+}
+function arrayBufferToBase64(ab) { return bytesToBase64(new Uint8Array(ab)); }
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (!port || port.name !== 'bili-dl-off') return;
+  port.onMessage.addListener(async (msg) => {
+    if (!msg || msg.type !== 'START') return;
+    try {
+      try { port.postMessage({ type: 'DL_LOG', requestId: msg.requestId, text: 'offscreen收到START，分片数=' + ((msg.durl && msg.durl.length) || 0) }); } catch (e) { /* ignore */ }
+      const r = await runDownload(msg, (p) => {
+        try { port.postMessage({ type: 'PROGRESS', requestId: msg.requestId, ...p }); } catch (e) { /* ignore */ }
+      });
+      const finalBuf = r.finalBuf;
+      const totalLen = finalBuf.byteLength;
+      const CHUNK = 256 * 1024; // 256KB 原始/片 → 约 341KB base64，单条端口消息稳妥
+      const count = Math.max(1, Math.ceil(totalLen / CHUNK));
+      const view = new Uint8Array(finalBuf);
+      // 诊断用：明确记录「离屏页到底拉到了多少字节」，便于定位是拉流问题还是传输问题
+      console.log('[字幕助手-offscreen] 拉流完成，fetchedBytes=' + totalLen + '，receivedBytes=' + r.totalBytes + '，base64分片数=' + count);
+      try { port.postMessage({ type: 'DL_LOG', requestId: msg.requestId, text: 'offscreen拉流完成，总字节=' + totalLen + '，base64分片数=' + count }); } catch (e) { /* ignore */ }
+      // 分片回传：同步连发 277 条大消息会挤爆端口队列，改为异步逐条+每次让出事件循环
+      let chunkErr = null;
+      for (let i = 0; i < count; i++) {
+        const start = i * CHUNK;
+        const end = Math.min(start + CHUNK, totalLen);
+        const slice = view.subarray(start, end);
+        try {
+          const b64 = bytesToBase64(slice); // 只编码当前 256KB 分片，不会把整个 buffer 发出去
+          port.postMessage({
+            type: 'DL_CHUNK',
+            requestId: msg.requestId,
+            index: i,
+            count,
+            b64,
+            filename: r.filename
+          });
+        } catch (e) {
+          chunkErr = e;
+          try { port.postMessage({ type: 'DL_END', requestId: msg.requestId, ok: false, error: '分片传输失败：' + String((e && e.message) || e) }); } catch (e2) { /* ignore */ }
+          break;
+        }
+        // 让出事件循环，避免消息队列积压导致端口断开；最后一条不用再等
+        if (i < count - 1) await new Promise((r) => setTimeout(r, 0));
+      }
+      if (!chunkErr) {
+        try { port.postMessage({ type: 'DL_LOG', requestId: msg.requestId, text: 'offscreen全部' + count + '个分片已发出，总字节=' + totalLen }); } catch (e) { /* ignore */ }
+        try { port.postMessage({ type: 'DL_END', requestId: msg.requestId, ok: true, totalBytes: totalLen, fetchedBytes: totalLen, filename: r.filename }); } catch (e) { /* ignore */ }
+      }
+    } catch (e) {
+      try { port.postMessage({ type: 'DL_END', requestId: msg.requestId, ok: false, error: String((e && e.message) || e) }); } catch (e2) { /* ignore */ }
+    }
+  });
+});
+
