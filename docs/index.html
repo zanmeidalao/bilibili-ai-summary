@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>提示词分享 · B站字幕AI总结</title>
+<style>
+  :root{
+    --brand:#fb7299;        /* B站粉 */
+    --brand-dark:#e85d86;
+    --brand-soft:#fff0f5;
+    --ink:#1f2430;
+    --ink-soft:#5b6273;
+    --ink-faint:#9aa1b1;
+    --bg:#f5f7fb;
+    --card:#ffffff;
+    --line:#e9edf4;
+    --ok:#2bb673;
+    --shadow:0 6px 22px rgba(31,36,48,.07);
+    --shadow-hover:0 12px 34px rgba(251,114,153,.18);
+    --radius:16px;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink);
+    background:var(--bg);
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--brand);text-decoration:none;}
+  a:hover{text-decoration:underline;}
+
+  /* 顶部 */
+  header{
+    position:sticky;top:0;z-index:20;
+    backdrop-filter:saturate(160%) blur(10px);
+    background:rgba(255,255,255,.82);
+    border-bottom:1px solid var(--line);
+  }
+  .nav{
+    max-width:1040px;margin:0 auto;padding:14px 22px;
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+  }
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;}
+  .brand .dot{
+    width:30px;height:30px;border-radius:9px;
+    background:linear-gradient(135deg,var(--brand),var(--brand-dark));
+    color:#fff;display:grid;place-items:center;font-size:16px;box-shadow:var(--shadow);
+  }
+  .nav-links{display:flex;gap:18px;font-size:14px;color:var(--ink-soft);}
+  .nav-links a{color:var(--ink-soft);}
+
+  /* 头图 */
+  .hero{
+    max-width:1040px;margin:0 auto;padding:54px 22px 30px;text-align:center;
+  }
+  .hero h1{font-size:34px;margin:0 0 12px;letter-spacing:-.5px;}
+  .hero h1 .accent{color:var(--brand);}
+  .hero p{font-size:16px;color:var(--ink-soft);max-width:640px;margin:0 auto 22px;}
+  .pill{
+    display:inline-flex;align-items:center;gap:6px;
+    background:var(--brand-soft);color:var(--brand-dark);
+    border:1px solid #ffd6e4;
+    padding:6px 14px;border-radius:999px;font-size:13px;font-weight:600;
+  }
+
+  /* 分享入口 */
+  .share{max-width:1040px;margin:6px auto 0;padding:0 22px;}
+  .share-card{
+    display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;
+    background:linear-gradient(120deg,var(--brand-soft),#fff);
+    border:1px solid #ffd6e4;border-radius:var(--radius);
+    padding:20px 24px;box-shadow:var(--shadow);
+  }
+  .share-card h2{margin:0 0 4px;font-size:18px;}
+  .share-card p{margin:0;color:var(--ink-soft);font-size:14px;max-width:560px;}
+  .share-card .hl{color:var(--brand-dark);font-weight:700;}
+
+  /* 搜索 */
+  .toolbar{max-width:1040px;margin:8px auto 4px;padding:0 22px;}
+  .search{
+    width:100%;padding:13px 16px;border:1px solid var(--line);border-radius:12px;
+    font-size:15px;background:#fff;outline:none;transition:border-color .15s,box-shadow .15s;
+  }
+  .search:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft);}
+
+  /* 列表 */
+  main{max-width:1040px;margin:0 auto;padding:22px 22px 60px;display:grid;gap:20px;}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);overflow:hidden;transition:box-shadow .2s,transform .2s;
+  }
+  .card:hover{box-shadow:var(--shadow-hover);transform:translateY(-2px);}
+  .card-head{padding:20px 22px 14px;}
+  .card-title{display:flex;align-items:center;gap:10px;font-size:19px;font-weight:700;margin:0;}
+  .card-title .emo{font-size:22px;}
+  .tags{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 0;}
+  .tag{
+    font-size:12px;color:var(--ink-soft);background:#f1f3f8;
+    border:1px solid var(--line);padding:3px 10px;border-radius:999px;
+  }
+  .desc{margin:12px 0 0;color:var(--ink-soft);font-size:14.5px;}
+  .card-actions{display:flex;flex-wrap:wrap;gap:10px;padding:0 22px 18px;}
+  .btn{
+    border:none;cursor:pointer;font-size:14px;font-weight:600;
+    padding:10px 16px;border-radius:11px;transition:background .15s,transform .05s;
+    display:inline-flex;align-items:center;gap:7px;
+  }
+  .btn:active{transform:scale(.97);}
+  .btn-primary{background:var(--brand);color:#fff;}
+  .btn-primary:hover{background:var(--brand-dark);}
+  .btn-ghost{background:#f1f3f8;color:var(--ink);}
+  .btn-ghost:hover{background:#e7ebf3;}
+
+  .pre-wrap{display:none;padding:0 22px 20px;}
+  .pre-wrap.open{display:block;}
+  pre.prompt{
+    margin:0;background:#0f1320;color:#e7ecf5;
+    border-radius:12px;padding:18px;max-height:460px;overflow:auto;
+    font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;
+  }
+
+  .empty{text-align:center;color:var(--ink-faint);padding:40px;display:none;}
+
+  /* 使用说明 */
+  .guide{max-width:1040px;margin:0 auto;padding:10px 22px 70px;}
+  .guide h2{font-size:20px;margin:0 0 14px;}
+  .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;}
+  .step{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 18px;}
+  .step .n{
+    width:26px;height:26px;border-radius:8px;background:var(--brand-soft);color:var(--brand-dark);
+    display:grid;place-items:center;font-weight:700;font-size:14px;margin-bottom:10px;
+  }
+  .step b{display:block;margin-bottom:4px;}
+  .step span{color:var(--ink-soft);font-size:13.5px;}
+
+  footer{border-top:1px solid var(--line);background:#fff;}
+  .foot{max-width:1040px;margin:0 auto;padding:22px;color:var(--ink-faint);font-size:13px;
+        display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;}
+
+  /* toast */
+  #toast{
+    position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(20px);
+    background:var(--ink);color:#fff;padding:11px 20px;border-radius:11px;font-size:14px;
+    opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;z-index:50;
+  }
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  @media(max-width:560px){
+    .hero h1{font-size:26px;}
+    .nav-links{display:none;}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="nav">
+    <div class="brand"><span class="dot">字</span> 提示词分享站</div>
+    <div class="nav-links">
+      <a href="#guide">使用说明</a>
+      <a href="https://github.com/zanmeidalao/bilibili-ai-summary" target="_blank" rel="noopener">GitHub 仓库</a>
+    </div>
+  </div>
+</header>
+
+<section class="hero">
+  <h1>搭配<span class="accent">AI总结助手</span>的AI分析提示词分享页</h1>
+  <p>把下面这些提示词复制到你的 AI（DeepSeek / ChatGPT 等），再用 B站字幕AI总结扩展一键把字幕发过去，即可得到结构化分析报告。</p>
+  <span class="pill">📝 支持 SRT / VTT / 纯文本字幕</span>
+</section>
+
+<section class="share">
+  <div class="share-card">
+    <div class="share-text">
+      <h2>🤝 有好的提示词？分享给大家</h2>
+      <p>点击我要分享提示词按钮，在仓库里提交你的提示词（建议搭配 SRT 字幕）如：<span class="hl">影视分析/学术分析/简要分析/时政新闻分析/等细分领域提示词</span>。提交后由维护者审核，通过即展示在本页。</p>
+    </div>
+    <button class="btn btn-primary" id="shareBtn">➕ 我要分享提示词</button>
+  </div>
+</section>
+
+<div class="toolbar">
+  <input id="search" class="search" type="text" placeholder="🔍 搜索提示词（如：联网、事实核查、金句…）" autocomplete="off">
+</div>
+
+<main id="list"></main>
+<div id="empty" class="empty">没有匹配的提示词，换个关键词试试～</div>
+
+<section class="guide" id="guide">
+  <h2>📍 怎么用</h2>
+  <div class="steps">
+    <div class="step"><div class="n">1</div><b>复制提示词</b><span>点卡片上的「复制全文」，把提示词贴进你的 AI 对话框。</span></div>
+    <div class="step"><div class="n">2</div><b>打开 B站视频</b><span>在视频页找到粉色圆形悬浮按钮（写着「字幕 / 复制」）。</span></div>
+    <div class="step"><div class="n">3</div><b>发送字幕</b><span>右键悬浮按钮 → 控制面板 → 选「分析提示词 / 发送到 AI」，字幕自动填入。</span></div>
+    <div class="step"><div class="n">4</div><b>拿到报告</b><span>AI 按提示词输出：速读、逻辑骨架、金句、事实核查与总评。</span></div>
+  </div>
+</section>
+
+<footer>
+  <div class="foot">
+    <span>© B站字幕AI总结 · 提示词分享页</span>
+    <span>由 bilibili-ai-summary 扩展用户提供</span>
+  </div>
+</footer>
+
+<div id="toast">已复制到剪贴板 ✓</div>
+
+<!-- 提示词数据源：每条放在 text/plain 脚本里，原样保留，便于精确复制 -->
+<script type="text/plain" class="prompt-src"
+  data-id="video-subtitle-analyst"
+  data-emoji="🎬"
+  data-title="通用带时间戳提示词"
+  data-tags="字幕分析|SRT|联网搜索|事实核查|金句">
+# 🎬 视频字幕深度分析专家（最终版 · 强制联网搜索 + 段落式可点击链接 + Emoji增强）
+**Role**
+你是一位顶级的内容解构师。用户会给你一段视频的**字幕文本（支持SRT/VTT带时间戳格式，或纯文本）**，你需要基于文本内容，输出一份高信息密度的分析报告。
+---
+**Input Rules（5条）**
+1. **时间轴处理**：检测时间戳→启用【时间轴锚定模式】；容错解析异常格式；语义单元取首条字幕起始时间或区间；统一 `[HH:MM:SS]` 格式，严禁编造。
+2. **文本清洗与保留**：剔除语气词、书面化改写；金句保留原文口语（仅去语气词）；专业术语中英标注；识别并标记 `[非内容]` 片段（广告/寒暄/闲聊），不纳入分析但在附注中标注。
+3. **篇幅自适应与时效性识别**：若字幕总时长＜5分钟或总字数＜1500字，模块3、4适度精简；若＞30分钟，可适当展开。若内容涉及时事/近期数据，在模块4中启用"最新状态"和"来源标注"。
+4. **联网搜索增强（强制尝试 + 可点击链接）**：模块4中标记为时效性的信息，**必须先尝试联网搜索**，再决定来源标注。**禁止未尝试搜索就直接标注 `[无法联网]`**。搜索成功后，来源标注用 **Markdown 链接语法** `[来源：媒体/日期](原始URL)`（段落中可正常渲染为可点击链接）。**严禁编造URL**；若无法获取真实URL，标注 `[链接不可用]`。
+5. **Emoji 增强可读性**：在分节标题、段落开头、关键判断旁适度使用 emoji，提升扫读效率。推荐清单：
+- 判断类：✅ ❌ ⚠️ ❓ ‼️
+- 提示类：💡 📌 🔍 📎 ⏭️
+- 趋势类：📈 📉 🔄
+- 关系类：🔗 ⚔️ 🤝
+- 强调类：🔥 ⭐ ❗ 💬
+禁止在正式句子中间塞 emoji，禁止同一段出现3个以上 emoji。
+---
+**Output Structure（5模块 + 1附注 + 1可选）**
+#### 📌 1. 三十秒速读
+- **核心命题**：一句话概括视频解决的核心问题或传递的核心信息。
+- **推荐指数**：⭐️⭐️⭐️⭐️⭐️（附一句理由）。
+- **适合人群**：用"如果你____，值得看；如果你____，可跳过"句式。
+#### 🧠 2. 逻辑骨架
+树状结构（不超过4个主分支）：
+- **引子/痛点**：
+- **核心论点1**：（主旨 + 1句关键论据）
+- **核心论点2**：
+- **核心论点3**：
+- **结尾/升华**：
+#### 💎 3. 精华提炼
+- **金句摘录**：3-5句，保留原文口语，标注 `[HH:MM:SS]`。
+- **新知与概念**：1-3个硬核知识点，用生活比喻解释，标注 `[HH:MM:SS]`。
+- **方法论/行动清单**：如有则列1-2-3步；如无则跳过。
+#### 📊 4. 事实核查与时效追踪
+**处理对象**：字幕中出现的**可量化数据**（百分比、金额、数量、时间）和**可外部核查的具体事实断言**。主观观点、价值判断、修辞表达不纳入。
+**采用段落式输出**，每条信息独立一段，格式为：
+> **序号.** 信息点 · `[时间轴]` · 核查判断 · 最新状态 · 来源标注
+**字段说明**：
+- **信息点**：简洁描述，不超过15字
+- **时间轴**：`[HH:MM:SS]`
+- **核查判断**：`✅ 与常识一致` / `✅ 已联网核实：与XX一致` / `⚠️ 存疑：具体偏离点` / `❓ 无法验证：需要什么来源`
+- **最新状态**：非时效性内容写 `—`，有时效性写 `最新：XXX`
+- **来源标注**：`[AI知识/截止YYYY-MM]` / `[来源：媒体/日期](URL)` / `[AI+网络一致]` / `[❓ 未经核实]` / `[无法联网]`
+**红线**：
+- 只列字幕中确实提到的信息，不主动扩展无关话题。
+- 严禁编造外部数据，无法验证就标注 `[❓ 无法验证]`。
+- 时效性信息必须先尝试联网搜索，禁止未尝试直接标注 `[无法联网]`。
+- 联网引用的URL必须来自实际搜索结果，严禁编造；无法获取URL时标注 `[链接不可用]`。
+- **来源标注必须用 Markdown 链接语法 `[文本](URL)`**（段落格式下可正常渲染为可点击链接）。
+#### 🏁 5. 最终总评
+- **亮点**：
+- **偏颇/局限**：
+- **我的延伸思考**：必须是一个具体的、可用"是/否"或"A还是B"回答的深层问题。
+#### 📎 附注：模态缺失预警
+仅列3条以内最关键项，格式 `[HH:MM:SS - HH:MM:SS]`，说明画面/音频可能包含的关键信息。非内容片段在此标注"可跳过"。
+#### 📍 时间轴索引（仅在用户明确要求时输出）
+按类别分组（📌金句/📊数据/👁️画面预警/⏭️非内容），每组不超过5条。
+---
+**Constraints（3条红线）**
+1. **不编造，但可引用**：
+- 模块1-3、5：**绝对不编造**，只能基于字幕原文。
+- 模块4：可引用AI知识或联网信息，但必须标注来源层级和时间；无法确认来源时标注 `[❓ 未经核实]`。联网引用必须用 Markdown 链接语法 `[来源：媒体/日期](URL)`；严禁编造URL。
+2. **不废话**：直给干货，杜绝啰嗦开场；清洗后须流畅自然。
+3. **格式统一**：时间轴统一 `[HH:MM:SS]`，不输出毫秒。
+</script>
+
+<script>
+  const listEl = document.getElementById('list');
+  const emptyEl = document.getElementById('empty');
+  const toast = document.getElementById('toast');
+  const searchEl = document.getElementById('search');
+
+  // 读取数据源
+  const srcs = Array.from(document.querySelectorAll('.prompt-src')).map(s => ({
+    id: s.dataset.id,
+    emoji: s.dataset.emoji || '📝',
+    title: s.dataset.title || '未命名提示词',
+    tags: (s.dataset.tags || '').split('|').filter(Boolean),
+    content: s.textContent.replace(/^\n+|\n+$/g, '')
+  }));
+
+  function render(filter){
+    listEl.innerHTML = '';
+    const kw = (filter || '').trim().toLowerCase();
+    const matched = srcs.filter(p => {
+      if(!kw) return true;
+      const hay = (p.title + ' ' + p.tags.join(' ') + ' ' + p.content).toLowerCase();
+      return hay.includes(kw);
+    });
+    emptyEl.style.display = matched.length ? 'none' : 'block';
+
+    matched.forEach(p => {
+      const card = document.createElement('article');
+      card.className = 'card';
+      const tagsHtml = p.tags.map(t => `<span class="tag">${t}</span>`).join('');
+      card.innerHTML = `
+        <div class="card-head">
+          <h3 class="card-title"><span class="emo">${p.emoji}</span>${p.title}</h3>
+          <div class="tags">${tagsHtml}</div>
+          <p class="desc">搭配 SRT / VTT 字幕使用，输出速读、逻辑骨架、金句、事实核查与总评的结构化报告。</p>
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-primary" data-copy>📋 复制全文</button>
+          <button class="btn btn-ghost" data-toggle>👁️ 查看完整提示词</button>
+        </div>
+        <div class="pre-wrap"><pre class="prompt"></pre></div>
+      `;
+      const pre = card.querySelector('pre.prompt');
+      pre.textContent = p.content;
+      card.querySelector('[data-copy]').addEventListener('click', () => copyText(p.content));
+      card.querySelector('[data-toggle]').addEventListener('click', e => {
+        const wrap = card.querySelector('.pre-wrap');
+        wrap.classList.toggle('open');
+        e.target.textContent = wrap.classList.contains('open') ? '🙈 收起提示词' : '👁️ 查看完整提示词';
+      });
+      listEl.appendChild(card);
+    });
+  }
+
+  function copyText(text){
+    const done = () => showToast('已复制到剪贴板 ✓');
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+    } else {
+      fallbackCopy(text, done);
+    }
+  }
+  function fallbackCopy(text, cb){
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); cb(); }catch(e){ showToast('复制失败，请手动选择'); }
+    document.body.removeChild(ta);
+  }
+  let toastTimer;
+  function showToast(msg){
+    toast.textContent = msg; toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+  }
+
+  searchEl.addEventListener('input', e => render(e.target.value));
+  render('');
+
+  // 分享入口：打开预填的 GitHub Issue（无后端，提交后由维护者审核）
+  const shareBtn = document.getElementById('shareBtn');
+  if(shareBtn){
+    shareBtn.addEventListener('click', () => {
+      const body = encodeURIComponent(
+        '请把你的提示词贴在下面（建议搭配 SRT 字幕使用）：\n\n' +
+        '--------------------------------\n' +
+        '标题：\n' +
+        '适用场景（如：影视分析/学术分析/简要分析/时政新闻分析/等）：\n' +
+        '提示词正文：\n\n' +
+        '--------------------------------\n' +
+        '（提交后由维护者审核，通过后会展示在分享页，感谢分享 🎉）'
+      );
+      const url = 'https://github.com/zanmeidalao/bilibili-ai-summary/issues/new?title=' +
+        encodeURIComponent('【提示词分享】') + '&body=' + body;
+      window.open(url, '_blank', 'noopener');
+    });
+  }
+</script>
+</body>
+</html>
