@@ -74,19 +74,13 @@ function render() {
         ${lockLabel}
         ${del}
       </div>
-      <textarea class="ptext collapsed" placeholder="提示词正文（发送到右侧 AI 时追加）"${lockedAttr}>${escapeHtml(p.text)}</textarea>
+      <textarea class="ptext" placeholder="提示词正文（发送到右侧 AI 时追加）"${lockedAttr}>${escapeHtml(p.text)}</textarea>
       <div class="card-foot">
-        <button class="toggle" type="button">展开</button>
         <button class="pcopy" type="button">📋 复制</button>
       </div>
     `;
     card.querySelector('input[type="radio"]').addEventListener('change', () => { setActive(p.id); });
     const ta = card.querySelector('.ptext');
-    const tg = card.querySelector('.toggle');
-    tg.addEventListener('click', () => {
-      const collapsed = ta.classList.toggle('collapsed');
-      tg.textContent = collapsed ? '展开' : '收起';
-    });
     card.querySelector('.pcopy').addEventListener('click', async (e) => {
       try {
         await navigator.clipboard.writeText(ta.value);
