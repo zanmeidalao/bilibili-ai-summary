@@ -74,9 +74,27 @@ function render() {
         ${lockLabel}
         ${del}
       </div>
-      <textarea class="ptext" placeholder="提示词正文（发送到右侧 AI 时追加）"${lockedAttr}>${escapeHtml(p.text)}</textarea>
+      <textarea class="ptext collapsed" placeholder="提示词正文（发送到右侧 AI 时追加）"${lockedAttr}>${escapeHtml(p.text)}</textarea>
+      <div class="card-foot">
+        <button class="toggle" type="button">展开</button>
+        <button class="pcopy" type="button">📋 复制</button>
+      </div>
     `;
     card.querySelector('input[type="radio"]').addEventListener('change', () => { setActive(p.id); });
+    const ta = card.querySelector('.ptext');
+    const tg = card.querySelector('.toggle');
+    tg.addEventListener('click', () => {
+      const collapsed = ta.classList.toggle('collapsed');
+      tg.textContent = collapsed ? '展开' : '收起';
+    });
+    card.querySelector('.pcopy').addEventListener('click', async (e) => {
+      try {
+        await navigator.clipboard.writeText(ta.value);
+        const b = e.currentTarget;
+        b.textContent = '✓ 已复制'; b.classList.add('ok');
+        setTimeout(() => { b.textContent = '📋 复制'; b.classList.remove('ok'); }, 1200);
+      } catch (_) { /* 剪贴板不可用时静默 */ }
+    });
     if (!locked) {
       card.querySelector('.pname').addEventListener('input', (e) => { p.name = e.target.value; setDirty(true); });
       card.querySelector('.ptext').addEventListener('input', (e) => { p.text = e.target.value; setDirty(true); });
@@ -133,6 +151,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const noneRadio = document.querySelector('input[name="prompt"][value="__none__"]');
   if (noneRadio) noneRadio.addEventListener('change', () => { setActive('__none__'); });
   $('add').addEventListener('click', addPrompt);
+  $('more').addEventListener('click', () => { window.open('https://zanmeidalao.github.io/bilibili-ai-summary/', '_blank'); });
   $('save').addEventListener('click', save);
   // Ctrl/Cmd+S：大众习惯的保存快捷键
   document.addEventListener('keydown', (e) => {
